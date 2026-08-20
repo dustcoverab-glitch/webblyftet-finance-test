@@ -100,7 +100,7 @@ describe("Customer to accounting business flow", () => {
     })).resolves.toBeTruthy();
   });
 
-  it("activates Stripe subscriptions and records invoice.paid accounting exactly once after a prior invoice.payment_failed", async () => {
+  it("activates Stripe subscriptions with allow_incomplete and records invoice.paid accounting exactly once after a prior invoice.payment_failed", async () => {
     await env.DB.prepare("INSERT INTO customers(id,name,email,stripe_customer_id) VALUES (?,?,?,?)")
       .bind("cus_sub", "Acme AB", "buyer@example.com", "cus_stripe")
       .run();
@@ -118,13 +118,15 @@ describe("Customer to accounting business flow", () => {
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ).bind("pm_local", "cus_sub", "STRIPE", "pm_card", "card", "visa", "4242", 12, 2030, "ACTIVE", 1).run();
 
+    const stripeRequests: Array<{ url: string; body: string }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
+      stripeRequests.push({ url, body: String(init?.body ?? "") });
       const body = url.includes("/v1/products")
         ? { id: "prod_stripe", object: "product" }
         : url.includes("/v1/prices")
           ? { id: "price_stripe", object: "price" }
-          : { id: "sub_stripe", object: "subscription", status: "incomplete", cancel_at_period_end: false };
+          : { id: "sub_stripe", object: "subscription", status: "active", cancel_at_period_end: false };
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { "content-type": "application/json", "request-id": "req_test" }
@@ -132,6 +134,19 @@ describe("Customer to accounting business flow", () => {
     }));
 
     await expect(activateStripeSubscription(workerEnv(), "sub_local")).resolves.toMatchObject({ stripe_subscription_id: "sub_stripe" });
+    const subscriptionRequest = stripeRequests.find((request) => request.url.includes("/v1/subscriptions"));
+    expect(subscriptionRequest?.body).toContain("payment_behavior=allow_incomplete");
+    expect(subscriptionRequest?.body).toContain("collection_method=charge_automatically");
+    expect(subscriptionRequest?.body).toContain("default_payment_method=pm_card");
+    await processStripeEvent(workerEnv(), stripeEvent("evt_subscription_active", "customer.subscription.updated", {
+      id: "sub_stripe",
+      object: "subscription",
+      status: "active",
+      current_period_start: 1787241600,
+      current_period_end: 1789920000,
+      cancel_at_period_end: false,
+      metadata: { webblyftet_subscription_id: "sub_local" }
+    }));
     await processStripeEvent(workerEnv(), stripeEvent("evt_invoice_failed", "invoice.payment_failed", {
       id: "in_sub_1",
       object: "invoice",
@@ -141,6 +156,15 @@ describe("Customer to accounting business flow", () => {
       subscription: "sub_stripe",
       payment_intent: "pi_invoice_1"
     }));
+    const failedState = await Promise.all([
+      env.DB.prepare("SELECT status FROM payments WHERE provider_payment_id=?")
+        .bind("in_sub_1")
+        .first<{ status: string }>(),
+      env.DB.prepare("SELECT status FROM subscriptions WHERE id=?")
+        .bind("sub_local")
+        .first<{ status: string }>()
+    ]);
+    expect(failedState.map((row) => row?.status)).toEqual(["FAILED", "PAST_DUE"]);
     await processStripeEvent(workerEnv(), stripeEvent("evt_invoice_paid", "invoice.paid", {
       id: "in_sub_1",
       object: "invoice",
@@ -152,6 +176,15 @@ describe("Customer to accounting business flow", () => {
       period_start: 1787241600,
       period_end: 1789920000,
       status_transitions: { paid_at: 1787241600 }
+    }));
+    await processStripeEvent(workerEnv(), stripeEvent("evt_subscription_active_after_payment", "customer.subscription.updated", {
+      id: "sub_stripe",
+      object: "subscription",
+      status: "active",
+      current_period_start: 1787241600,
+      current_period_end: 1789920000,
+      cancel_at_period_end: false,
+      metadata: { webblyftet_subscription_id: "sub_local" }
     }));
     await processStripeEvent(workerEnv(), stripeEvent("evt_invoice_paid_duplicate_provider", "invoice.paid", {
       id: "in_sub_1",
@@ -169,10 +202,90 @@ describe("Customer to accounting business flow", () => {
     const payment = await env.DB.prepare("SELECT status FROM payments WHERE provider_payment_id=?")
       .bind("in_sub_1")
       .first<{ status: string }>();
+    const subscriptionStatus = await env.DB.prepare("SELECT status FROM subscriptions WHERE id=?")
+      .bind("sub_local")
+      .first<{ status: string }>();
     const accounting = await env.DB.prepare("SELECT COUNT(*) count FROM accounting_events WHERE event_type='SUBSCRIPTION_PAYMENT_RECEIVED'")
       .first<{ count: number }>();
     expect(payment?.status).toBe("SUCCEEDED");
+    expect(subscriptionStatus?.status).toBe("ACTIVE");
     expect(accounting?.count).toBe(1);
+  });
+
+  it("keeps subscriptions incomplete when Stripe requires customer action and exposes the PaymentIntent client secret", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name,email,stripe_customer_id) VALUES (?,?,?,?)")
+      .bind("cus_action", "Acme AB", "buyer@example.com", "cus_stripe_action")
+      .run();
+    const product = await createProduct(workerEnv(), { name: "Action Service", product_type: "SUBSCRIPTION" });
+    const price = await createPrice(workerEnv(), { product_id: product!.id, amount: 20000, billing_type: "RECURRING", billing_interval: "MONTH" });
+    await env.DB.prepare(
+      `INSERT INTO subscriptions(id,customer_id,status,currency,start_date,current_period_start)
+       VALUES (?,?,?,?,?,?)`
+    ).bind("sub_action", "cus_action", "PENDING", "SEK", "2026-08-20", "2026-08-20").run();
+    await env.DB.prepare(
+      "INSERT INTO subscription_items(id,subscription_id,product_id,price_id,quantity,unit_amount) VALUES (?,?,?,?,?,?)"
+    ).bind("sitem_action", "sub_action", product!.id, price!.id, 1, 20000).run();
+    await env.DB.prepare(
+      `INSERT INTO payment_methods(id,customer_id,provider,provider_payment_method_id,type,brand,last4,exp_month,exp_year,status,is_default)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind("pm_action", "cus_action", "STRIPE", "pm_card_action", "card", "visa", "3184", 12, 2030, "ACTIVE", 1).run();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("/v1/products")
+        ? { id: "prod_action", object: "product" }
+        : url.includes("/v1/prices")
+          ? { id: "price_action", object: "price" }
+          : {
+              id: "sub_stripe_action",
+              object: "subscription",
+              status: "incomplete",
+              cancel_at_period_end: false,
+              latest_invoice: {
+                id: "in_action",
+                object: "invoice",
+                payment_intent: {
+                  id: "pi_action",
+                  object: "payment_intent",
+                  status: "requires_action",
+                  client_secret: "pi_action_secret"
+                }
+              }
+            };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json", "request-id": "req_test" }
+      });
+    }));
+
+    const result = await activateStripeSubscription(workerEnv(), "sub_action");
+    await processStripeEvent(workerEnv(), stripeEvent("evt_subscription_action", "customer.subscription.created", {
+      id: "sub_stripe_action",
+      object: "subscription",
+      status: "incomplete",
+      current_period_start: null,
+      current_period_end: null,
+      cancel_at_period_end: false,
+      metadata: { webblyftet_subscription_id: "sub_action" }
+    }));
+
+    const subscriptionStatus = await env.DB.prepare("SELECT status FROM subscriptions WHERE id=?")
+      .bind("sub_action")
+      .first<{ status: string }>();
+    const accounting = await env.DB.prepare("SELECT COUNT(*) count FROM accounting_events WHERE event_type='SUBSCRIPTION_PAYMENT_RECEIVED'")
+      .first<{ count: number }>();
+    expect(result).toMatchObject({
+      stripe_subscription_id: "sub_stripe_action",
+      status: "incomplete",
+      payment_action: {
+        type: "requires_action",
+        invoice_id: "in_action",
+        payment_intent_id: "pi_action",
+        client_secret: "pi_action_secret"
+      }
+    });
+    expect(subscriptionStatus?.status).toBe("PENDING");
+    expect(accounting?.count).toBe(0);
   });
 
   it("recovers acceptance when token was claimed but acceptance creation did not finish", async () => {

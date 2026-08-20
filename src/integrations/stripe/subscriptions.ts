@@ -4,6 +4,7 @@ import { stripeClient } from "./client";
 import { createOrReuseStripeCustomer } from "./customers";
 import type { StripeSetupIntentResult } from "./types";
 import { audit } from "../../core/finance";
+import type Stripe from "stripe";
 
 const activeSetupIntentStatuses = [
   "CREATED",
@@ -173,8 +174,10 @@ export async function activateStripeSubscription(env: Env, subscriptionId: strin
   const result = await stripe.subscriptions.create({
     customer: customer.stripe_customer_id,
     items: stripeItems,
+    collection_method: "charge_automatically",
     default_payment_method: paymentMethod.provider_payment_method_id,
-    payment_behavior: "default_incomplete",
+    payment_behavior: "allow_incomplete",
+    expand: ["latest_invoice.payment_intent"],
     metadata: {
       webblyftet_subscription_id: subscription.id,
       webblyftet_customer_id: customer.id,
@@ -190,7 +193,12 @@ export async function activateStripeSubscription(env: Env, subscriptionId: strin
     stripe_subscription_id: result.id,
     status: result.status
   });
-  return { stripe_subscription_id: result.id, reused: false, status: result.status };
+  return {
+    stripe_subscription_id: result.id,
+    reused: false,
+    status: result.status,
+    payment_action: subscriptionPaymentAction(result)
+  };
 }
 
 export async function cancelStripeSubscriptionAtPeriodEnd(env: Env, subscriptionId: string) {
@@ -230,4 +238,23 @@ function setupIntentStatus(status: string): string {
     default:
       return "CREATED";
   }
+}
+
+function subscriptionPaymentAction(subscription: Stripe.Subscription) {
+  const latestInvoice = subscription.latest_invoice;
+  const invoice = typeof latestInvoice === "object" && latestInvoice !== null ? latestInvoice : null;
+  const rawInvoice = invoice as unknown as {
+    id?: string;
+    payment_intent?: string | Stripe.PaymentIntent | null;
+  } | null;
+  const paymentIntent = typeof rawInvoice?.payment_intent === "object" && rawInvoice.payment_intent !== null
+    ? rawInvoice.payment_intent
+    : null;
+  if (!paymentIntent || paymentIntent.status !== "requires_action") return null;
+  return {
+    type: "requires_action",
+    invoice_id: rawInvoice?.id ?? null,
+    payment_intent_id: paymentIntent.id,
+    client_secret: paymentIntent.client_secret
+  };
 }
