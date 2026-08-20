@@ -34,6 +34,11 @@ type IntegrationStatus = {
   tenant_id?: string;
   scope?: string;
 };
+type StripePaymentAction = {
+  required?: boolean;
+  type?: string;
+  client_secret?: string | null;
+};
 
 function money(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString("sv-SE", { style: "currency", currency: "SEK", maximumFractionDigits: 0 });
@@ -47,6 +52,19 @@ function jsonArray(value: string | any[] | null | undefined) {
   if (Array.isArray(value)) return value.filter(Boolean);
   if (!value) return [];
   try { return JSON.parse(value).filter(Boolean); } catch { return []; }
+}
+
+async function stripeJs(publishableKey: string) {
+  if (!document.querySelector('script[src="https://js.stripe.com/v3/"]')) {
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://js.stripe.com/v3/";
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Stripe.js kunde inte laddas."));
+      document.head.appendChild(script);
+    });
+  }
+  return (window as any).Stripe(publishableKey);
 }
 
 const nav = [
@@ -352,7 +370,14 @@ function Subscriptions() {
   async function activate(row: Subscription) {
     setError(null);
     try {
-      await post(`/api/subscriptions/${row.id}/activate`);
+      const result = await post<{ payment_action?: StripePaymentAction }>(`/api/subscriptions/${row.id}/activate`);
+      if (result.payment_action?.required && result.payment_action.client_secret) {
+        const config = await api<{ configured: boolean; publishableKey: string; message?: string }>("/api/stripe/config");
+        if (!config.configured) throw new Error(config.message ?? "Stripe är inte konfigurerat ännu.");
+        const stripe = await stripeJs(config.publishableKey);
+        const confirmation = await stripe.confirmCardPayment(result.payment_action.client_secret);
+        if (confirmation.error) throw new Error(confirmation.error.message);
+      }
       await load();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Kunde inte aktivera abonnemanget.";
@@ -387,16 +412,7 @@ function PaymentMethodPage() {
         return;
       }
       const session = await post<any>(`/api/customers/${customerId}/payment-method/setup`);
-      if (!document.querySelector('script[src="https://js.stripe.com/v3/"]')) {
-        await new Promise<void>((resolve, reject) => {
-          const script = document.createElement("script");
-          script.src = "https://js.stripe.com/v3/";
-          script.onload = () => resolve();
-          script.onerror = () => reject(new Error("Stripe.js kunde inte laddas."));
-          document.head.appendChild(script);
-        });
-      }
-      stripe = (window as any).Stripe(config.publishableKey);
+      stripe = await stripeJs(config.publishableKey);
       const elements = stripe.elements();
       card = elements.create("card");
       card.mount("#card-element");

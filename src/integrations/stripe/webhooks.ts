@@ -5,6 +5,7 @@ import { PublicAppError } from "../../lib/app-error";
 import { stripeClient, stripeWebhookCryptoProvider } from "./client";
 import { handledStripeEvents } from "./types";
 import { stripeWebhookSecret } from "../../lib/config";
+import { invoicePaymentFromInvoice, retrieveInvoicePaymentDetails } from "./invoice-payments";
 
 export async function constructStripeWebhookEvent(env: Env, rawBody: string, signature: string | null): Promise<Stripe.Event> {
   const webhookSecret = stripeWebhookSecret(env);
@@ -171,7 +172,7 @@ async function handleStripeInvoicePaid(env: Env, invoice: Stripe.Invoice) {
   const subscription = await one<any>(env.DB, "SELECT * FROM subscriptions WHERE stripe_subscription_id=?", subscriptionId);
   if (!subscription) return;
   const customerId = subscription.customer_id;
-  const paymentIntentId = stripeInvoicePaymentIntentId(invoice);
+  const paymentIntentId = await stripeInvoicePaymentIntentId(env, invoice);
   const gross = invoice.amount_paid ?? invoice.total ?? 0;
   let payment = await upsertPayment(env, {
     customer_id: customerId,
@@ -253,7 +254,7 @@ async function handleStripeInvoicePaymentFailed(env: Env, invoice: Stripe.Invoic
   await recordPaymentAttempt(env, {
     payment_id: payment!.id,
     provider: "STRIPE",
-    provider_attempt_id: stripeInvoicePaymentIntentId(invoice) ?? `${invoice.id}:failed`,
+    provider_attempt_id: await stripeInvoicePaymentIntentId(env, invoice) ?? `${invoice.id}:failed`,
     status: "FAILED",
     error_message: "Stripe subscription invoice payment failed",
     payload_json: {
@@ -416,10 +417,14 @@ function stripeInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
   return raw.parent?.subscription_details?.subscription ?? null;
 }
 
-function stripeInvoicePaymentIntentId(invoice: Stripe.Invoice): string | null {
+async function stripeInvoicePaymentIntentId(env: Env, invoice: Stripe.Invoice): Promise<string | null> {
   const raw = invoice as unknown as { payment_intent?: string | { id?: string } | null };
   if (typeof raw.payment_intent === "string") return raw.payment_intent;
-  return raw.payment_intent?.id ?? null;
+  if (raw.payment_intent?.id) return raw.payment_intent.id;
+  const embedded = invoicePaymentFromInvoice(invoice);
+  if (embedded?.payment_intent_id) return embedded.payment_intent_id;
+  const details = await retrieveInvoicePaymentDetails(stripeClient(env), invoice.id);
+  return details?.payment_intent_id ?? null;
 }
 
 function paymentIntentInvoiceId(intent: Stripe.PaymentIntent): string | null {

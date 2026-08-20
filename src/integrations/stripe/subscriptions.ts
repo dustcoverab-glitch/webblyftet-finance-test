@@ -5,6 +5,7 @@ import { createOrReuseStripeCustomer } from "./customers";
 import type { StripeSetupIntentResult } from "./types";
 import { audit } from "../../core/finance";
 import type Stripe from "stripe";
+import { retrieveInvoicePaymentDetails } from "./invoice-payments";
 
 const activeSetupIntentStatuses = [
   "CREATED",
@@ -177,7 +178,8 @@ export async function activateStripeSubscription(env: Env, subscriptionId: strin
     collection_method: "charge_automatically",
     default_payment_method: paymentMethod.provider_payment_method_id,
     payment_behavior: "allow_incomplete",
-    expand: ["latest_invoice.payment_intent"],
+    off_session: true,
+    expand: ["latest_invoice"],
     metadata: {
       webblyftet_subscription_id: subscription.id,
       webblyftet_customer_id: customer.id,
@@ -197,7 +199,7 @@ export async function activateStripeSubscription(env: Env, subscriptionId: strin
     stripe_subscription_id: result.id,
     reused: false,
     status: result.status,
-    payment_action: subscriptionPaymentAction(result)
+    payment_action: await subscriptionPaymentAction(stripe, result)
   };
 }
 
@@ -240,21 +242,31 @@ function setupIntentStatus(status: string): string {
   }
 }
 
-function subscriptionPaymentAction(subscription: Stripe.Subscription) {
+async function subscriptionPaymentAction(stripe: Stripe, subscription: Stripe.Subscription) {
   const latestInvoice = subscription.latest_invoice;
   const invoice = typeof latestInvoice === "object" && latestInvoice !== null ? latestInvoice : null;
-  const rawInvoice = invoice as unknown as {
-    id?: string;
-    payment_intent?: string | Stripe.PaymentIntent | null;
-  } | null;
-  const paymentIntent = typeof rawInvoice?.payment_intent === "object" && rawInvoice.payment_intent !== null
-    ? rawInvoice.payment_intent
-    : null;
-  if (!paymentIntent || paymentIntent.status !== "requires_action") return null;
+  if (!invoice || subscription.status !== "incomplete") return null;
+  const payment = await retrieveInvoicePaymentDetails(stripe, invoice);
+  const paymentIntent = payment?.payment_intent ?? null;
+  if (!paymentIntent) return null;
+  if (paymentIntent.status === "requires_confirmation") {
+    return {
+      required: false,
+      type: "STRIPE_REQUIRES_CONFIRMATION",
+      invoice_id: invoice.id,
+      invoice_payment_id: payment?.invoice_payment_id ?? null,
+      payment_intent_id: paymentIntent.id,
+      status: paymentIntent.status
+    };
+  }
+  if (paymentIntent.status !== "requires_action") return null;
   return {
-    type: "requires_action",
-    invoice_id: rawInvoice?.id ?? null,
+    required: true,
+    type: "STRIPE_CONFIRMATION",
+    invoice_id: invoice.id,
+    invoice_payment_id: payment?.invoice_payment_id ?? null,
     payment_intent_id: paymentIntent.id,
+    status: paymentIntent.status,
     client_secret: paymentIntent.client_secret
   };
 }

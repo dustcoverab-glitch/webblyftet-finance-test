@@ -137,7 +137,9 @@ describe("Customer to accounting business flow", () => {
     const subscriptionRequest = stripeRequests.find((request) => request.url.includes("/v1/subscriptions"));
     expect(subscriptionRequest?.body).toContain("payment_behavior=allow_incomplete");
     expect(subscriptionRequest?.body).toContain("collection_method=charge_automatically");
+    expect(subscriptionRequest?.body).toContain("off_session=true");
     expect(subscriptionRequest?.body).toContain("default_payment_method=pm_card");
+    await expect(activateStripeSubscription(workerEnv(), "sub_local")).resolves.toMatchObject({ stripe_subscription_id: "sub_stripe", reused: true });
     await processStripeEvent(workerEnv(), stripeEvent("evt_subscription_active", "customer.subscription.updated", {
       id: "sub_stripe",
       object: "subscription",
@@ -236,20 +238,35 @@ describe("Customer to accounting business flow", () => {
         ? { id: "prod_action", object: "product" }
         : url.includes("/v1/prices")
           ? { id: "price_action", object: "price" }
-          : {
+          : url.includes("/v1/invoice_payments")
+            ? {
+                object: "list",
+                data: [{
+                  id: "inpay_action",
+                  object: "invoice_payment",
+                  is_default: true,
+                  status: "open",
+                  amount_requested: 20000,
+                  amount_paid: null,
+                  payment: {
+                    type: "payment_intent",
+                    payment_intent: {
+                      id: "pi_action",
+                      object: "payment_intent",
+                      status: "requires_action",
+                      client_secret: "pi_action_secret"
+                    }
+                  }
+                }]
+              }
+            : {
               id: "sub_stripe_action",
               object: "subscription",
               status: "incomplete",
               cancel_at_period_end: false,
               latest_invoice: {
                 id: "in_action",
-                object: "invoice",
-                payment_intent: {
-                  id: "pi_action",
-                  object: "payment_intent",
-                  status: "requires_action",
-                  client_secret: "pi_action_secret"
-                }
+                object: "invoice"
               }
             };
       return new Response(JSON.stringify(body), {
@@ -278,9 +295,12 @@ describe("Customer to accounting business flow", () => {
       stripe_subscription_id: "sub_stripe_action",
       status: "incomplete",
       payment_action: {
-        type: "requires_action",
+        required: true,
+        type: "STRIPE_CONFIRMATION",
         invoice_id: "in_action",
+        invoice_payment_id: "inpay_action",
         payment_intent_id: "pi_action",
+        status: "requires_action",
         client_secret: "pi_action_secret"
       }
     });
@@ -425,7 +445,21 @@ describe("Customer to accounting business flow", () => {
       total: 25000,
       currency: "sek",
       subscription: "sub_stripe_rec",
-      payment_intent: "pi_recurring",
+      payments: {
+        data: [{
+          id: "inpay_recurring",
+          is_default: true,
+          status: "paid",
+          payment: {
+            type: "payment_intent",
+            payment_intent: {
+              id: "pi_recurring",
+              object: "payment_intent",
+              status: "succeeded"
+            }
+          }
+        }]
+      },
       period_start: 1787241600,
       period_end: 1789920000,
       status_transitions: { paid_at: 1787241600 }
