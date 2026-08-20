@@ -8,8 +8,8 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"],
+    "types": ["node", "@cloudflare/vitest-pool-workers/types"],
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "vite.config.ts", "worker-configuration.d.ts"]
+  "include": ["src", "tests", "vite.config.ts", "vitest.config.ts", "worker-configuration.d.ts"]
 }

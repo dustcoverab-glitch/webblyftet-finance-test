@@ -1,6 +1,10 @@
 node_modules
 dist
 .dev.vars
+.env
+.env.*
 .wrangler
 .DS_Store
 *.log
+*.pem
+*.key

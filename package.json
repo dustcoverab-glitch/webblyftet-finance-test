@@ -7,11 +7,14 @@
     "dev": "vite",
     "dev:worker": "wrangler dev",
     "build": "vite build",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && wrangler deploy --env test",
+    "deploy:production": "npm run build && wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
     "cf-types": "wrangler types",
-    "db:migrate:local": "wrangler d1 migrations apply webblyftet-finance-test --local",
-    "db:migrate:remote": "wrangler d1 migrations apply webblyftet-finance-test --remote"
+    "test": "WRANGLER_LOG_PATH=.wrangler/logs FORTNOX_CLIENT_ID=test-placeholder FORTNOX_CLIENT_SECRET=test-placeholder TOKEN_ENCRYPTION_KEY_BASE64=test-placeholder vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply webblyftet-finance-test-local --local",
+    "db:migrate:test": "wrangler d1 migrations apply webblyftet-finance-test --remote --env test",
+    "db:migrate:production": "wrangler d1 migrations apply webblyftet-finance-production --remote --env production"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.7.2",
@@ -23,12 +26,14 @@
     "zod": "^4.0.17"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@types/node": "^26.2.0",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
+    "vitest": "^4.1.11",
     "wrangler": "^4.31.0"
   }
 }

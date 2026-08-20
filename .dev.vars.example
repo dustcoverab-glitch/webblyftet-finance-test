@@ -1,4 +1,3 @@
 FORTNOX_CLIENT_ID=replace_me
 FORTNOX_CLIENT_SECRET=replace_me
 TOKEN_ENCRYPTION_KEY_BASE64=replace_with_32_random_bytes_base64
-ADMIN_API_KEY=replace_with_long_random_secret

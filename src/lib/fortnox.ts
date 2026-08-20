@@ -1,19 +1,6 @@
 import { decryptString, encryptString } from "./crypto";
 import { id, one } from "./db";
 
-export type WorkerEnv = {
-  DB: D1Database;
-  RECEIPTS: R2Bucket;
-  ASSETS: Fetcher;
-  APP_ENV: string;
-  APP_BASE_URL: string;
-  FORTNOX_SCOPES: string;
-  FORTNOX_CLIENT_ID: string;
-  FORTNOX_CLIENT_SECRET: string;
-  TOKEN_ENCRYPTION_KEY_BASE64: string;
-  ADMIN_API_KEY: string;
-};
-
 type Connection = {
   id: string;
   tenant_id: string | null;
@@ -26,15 +13,50 @@ type Connection = {
 const AUTH_URL = "https://apps.fortnox.se/oauth-v1/auth";
 const TOKEN_URL = "https://apps.fortnox.se/oauth-v1/token";
 const API_BASE = "https://api.fortnox.se/3";
+const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|api[_-]?key/i;
 
-export async function createAuthUrl(env: WorkerEnv): Promise<string> {
+export class PublicAppError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly publicMessage: string,
+    public readonly requestId = id("err")
+  ) {
+    super(publicMessage);
+  }
+}
+
+export class FortnoxApiError extends PublicAppError {
+  constructor(
+    status: number,
+    publicMessage: string,
+    public readonly syncId: string,
+    public readonly responseBody?: unknown
+  ) {
+    super(status, publicMessage, syncId);
+  }
+}
+
+export function appBaseUrl(env: Env): string {
+  return env.APP_BASE_URL.replace(/\/+$/, "");
+}
+
+export function fortnoxRedirectUri(env: Env): string {
+  return `${appBaseUrl(env)}/auth/fortnox/callback`;
+}
+
+export async function cleanupExpiredOAuthStates(env: Env): Promise<void> {
+  await env.DB.prepare("DELETE FROM oauth_states WHERE expires_at <= ?").bind(new Date().toISOString()).run();
+}
+
+export async function createAuthUrl(env: Env): Promise<string> {
+  await cleanupExpiredOAuthStates(env);
   const state = crypto.randomUUID();
   const expires = new Date(Date.now() + 10 * 60_000).toISOString();
   await env.DB.prepare("INSERT INTO oauth_states(state, expires_at) VALUES (?, ?)").bind(state, expires).run();
 
   const url = new URL(AUTH_URL);
   url.searchParams.set("client_id", env.FORTNOX_CLIENT_ID);
-  url.searchParams.set("redirect_uri", `${env.APP_BASE_URL}/auth/fortnox/callback`);
+  url.searchParams.set("redirect_uri", fortnoxRedirectUri(env));
   url.searchParams.set("scope", env.FORTNOX_SCOPES);
   url.searchParams.set("state", state);
   url.searchParams.set("access_type", "offline");
@@ -43,25 +65,30 @@ export async function createAuthUrl(env: WorkerEnv): Promise<string> {
   return url.toString();
 }
 
-async function basicAuth(env: WorkerEnv): Promise<string> {
+async function basicAuth(env: Env): Promise<string> {
   return btoa(`${env.FORTNOX_CLIENT_ID}:${env.FORTNOX_CLIENT_SECRET}`);
 }
 
-export async function exchangeCode(env: WorkerEnv, code: string, state: string) {
+export async function consumeOAuthState(env: Env, state: string, now = Date.now()): Promise<void> {
   const record = await one<{ state: string; expires_at: string }>(
     env.DB,
     "SELECT state, expires_at FROM oauth_states WHERE state = ?",
     state
   );
-  if (!record || new Date(record.expires_at).getTime() < Date.now()) {
-    throw new Error("OAuth state is invalid or expired.");
-  }
   await env.DB.prepare("DELETE FROM oauth_states WHERE state = ?").bind(state).run();
+  if (!record || new Date(record.expires_at).getTime() < now) {
+    throw new PublicAppError(400, "OAuth-sessionen är ogiltig eller har gått ut.");
+  }
+}
+
+export async function exchangeCode(env: Env, code: string, state: string) {
+  await cleanupExpiredOAuthStates(env);
+  await consumeOAuthState(env, state);
 
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: `${env.APP_BASE_URL}/auth/fortnox/callback`
+    redirect_uri: fortnoxRedirectUri(env)
   });
 
   const response = await fetch(TOKEN_URL, {
@@ -74,7 +101,7 @@ export async function exchangeCode(env: WorkerEnv, code: string, state: string) 
   });
 
   if (!response.ok) {
-    throw new Error(`Fortnox token exchange failed: ${response.status} ${await response.text()}`);
+    throw new PublicAppError(502, "Fortnox-anslutningen kunde inte slutföras.");
   }
 
   const token = await response.json<{
@@ -109,7 +136,34 @@ export async function exchangeCode(env: WorkerEnv, code: string, state: string) 
   return { tenantId, companyName, scope: token.scope };
 }
 
-async function refreshIfNeeded(env: WorkerEnv, connection: Connection): Promise<string> {
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeForLog(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        SENSITIVE_LOG_KEYS.test(key) ? "redacted" : key,
+        SENSITIVE_LOG_KEYS.test(key) ? "[REDACTED]" : sanitizeForLog(item)
+      ])
+    );
+  }
+  return value;
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/Basic\s+[A-Za-z0-9+/=-]+/gi, "Basic [REDACTED]")
+    .replace(/("(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|secret|api[_-]?key)"\s*:\s*")([^"]*)(")/gi, "$1[REDACTED]$3")
+    .replace(/((?:access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|secret|api[_-]?key)=)[^&\s]+/gi, "$1[REDACTED]");
+}
+
+function stringifyLogValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return redactSensitiveText(value);
+  return JSON.stringify(sanitizeForLog(value));
+}
+
+async function refreshIfNeeded(env: Env, connection: Connection): Promise<string> {
   if (
     connection.access_token_enc &&
     connection.token_expires_at &&
@@ -139,7 +193,9 @@ async function refreshIfNeeded(env: WorkerEnv, connection: Connection): Promise<
     }
   }
 
-  if (!connection.refresh_token_enc) throw new Error("Fortnox connection has expired. Reconnect.");
+  if (!connection.refresh_token_enc) {
+    throw new PublicAppError(401, "Fortnox-anslutningen har gått ut. Anslut Fortnox igen.");
+  }
   const refreshToken = await decryptString(connection.refresh_token_enc, env.TOKEN_ENCRYPTION_KEY_BASE64);
   const response = await fetch(TOKEN_URL, {
     method: "POST",
@@ -149,7 +205,7 @@ async function refreshIfNeeded(env: WorkerEnv, connection: Connection): Promise<
     },
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken })
   });
-  if (!response.ok) throw new Error(`Fortnox token refresh failed: ${response.status}`);
+  if (!response.ok) throw new PublicAppError(401, "Fortnox-anslutningen har gått ut. Anslut Fortnox igen.");
 
   const token = await response.json<{
     access_token: string;
@@ -169,7 +225,7 @@ async function refreshIfNeeded(env: WorkerEnv, connection: Connection): Promise<
 }
 
 export async function fortnoxRequest<T>(
-  env: WorkerEnv,
+  env: Env,
   path: string,
   init: RequestInit & { json?: unknown } = {}
 ): Promise<T> {
@@ -177,7 +233,7 @@ export async function fortnoxRequest<T>(
     env.DB,
     "SELECT id, tenant_id, access_token_enc, refresh_token_enc, token_expires_at, scope FROM fortnox_connections LIMIT 1"
   );
-  if (!connection) throw new Error("Fortnox is not connected.");
+  if (!connection) throw new PublicAppError(409, "Fortnox är inte anslutet.");
 
   const token = await refreshIfNeeded(env, connection);
   const endpoint = path.startsWith("http") ? path : `${API_BASE}${path}`;
@@ -198,26 +254,32 @@ export async function fortnoxRequest<T>(
     try { parsed = JSON.parse(raw); } catch { parsed = raw; }
   }
 
+  const syncId = id("sync");
   await env.DB.prepare(
     `INSERT INTO sync_log
       (id,direction,entity_type,operation,endpoint,http_status,success,request_json,response_json,error_message)
      VALUES (?,?,?,?,?,?,?,?,?,?)`
   ).bind(
-    id("sync"), "OUTBOUND", "FORTNOX", init.method ?? "GET", endpoint, response.status,
+    syncId, "OUTBOUND", "FORTNOX", init.method ?? "GET", endpoint, response.status,
     response.ok ? 1 : 0,
-    init.json !== undefined ? JSON.stringify(init.json) : null,
-    typeof parsed === "string" ? parsed : JSON.stringify(parsed),
+    stringifyLogValue(init.json),
+    stringifyLogValue(parsed),
     response.ok ? null : `HTTP ${response.status}`
   ).run();
 
   if (!response.ok) {
-    throw new Error(`Fortnox API ${response.status}: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`);
+    throw new FortnoxApiError(
+      response.status >= 500 ? 502 : response.status,
+      `Fortnox-anropet misslyckades. Referens: ${syncId}`,
+      syncId,
+      parsed
+    );
   }
   return parsed as T;
 }
 
 export async function uploadInboxFile(
-  env: WorkerEnv,
+  env: Env,
   file: File,
   folder: "Inbox_v" | "Inbox_s" | "Inbox_kf" | "Inbox_o" | "Inbox_of" = "Inbox_v"
 ) {
@@ -225,7 +287,7 @@ export async function uploadInboxFile(
     env.DB,
     "SELECT id, tenant_id, access_token_enc, refresh_token_enc, token_expires_at, scope FROM fortnox_connections LIMIT 1"
   );
-  if (!connection) throw new Error("Fortnox is not connected.");
+  if (!connection) throw new PublicAppError(409, "Fortnox är inte anslutet.");
 
   const token = await refreshIfNeeded(env, connection);
   const form = new FormData();
@@ -246,25 +308,31 @@ export async function uploadInboxFile(
     try { parsed = JSON.parse(raw); } catch { parsed = raw; }
   }
 
+  const syncId = id("sync");
   await env.DB.prepare(
     `INSERT INTO sync_log
       (id,direction,entity_type,operation,endpoint,http_status,success,request_json,response_json,error_message)
      VALUES (?,?,?,?,?,?,?,?,?,?)`
   ).bind(
-    id("sync"), "OUTBOUND", "FORTNOX_INBOX", "POST", endpoint, response.status,
+    syncId, "OUTBOUND", "FORTNOX_INBOX", "POST", endpoint, response.status,
     response.ok ? 1 : 0,
-    JSON.stringify({ folder, filename: file.name, mime_type: file.type, size: file.size }),
-    typeof parsed === "string" ? parsed : JSON.stringify(parsed),
+    stringifyLogValue({ folder, filename: file.name, mime_type: file.type, size: file.size }),
+    stringifyLogValue(parsed),
     response.ok ? null : `HTTP ${response.status}`
   ).run();
 
   if (!response.ok) {
-    throw new Error(`Fortnox Inbox upload ${response.status}: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`);
+    throw new FortnoxApiError(
+      response.status >= 500 ? 502 : response.status,
+      `Fortnox Inbox-uppladdningen misslyckades. Referens: ${syncId}`,
+      syncId,
+      parsed
+    );
   }
   return parsed as { File?: { Id?: string; Name?: string; Path?: string; Size?: string } };
 }
 
-export async function connectionStatus(env: WorkerEnv) {
+export async function connectionStatus(env: Env) {
   const row = await one<any>(
     env.DB,
     "SELECT tenant_id, company_name, scope, connected_at, updated_at FROM fortnox_connections LIMIT 1"

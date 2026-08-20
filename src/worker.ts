@@ -1,32 +1,24 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { all, id, one } from "./lib/db";
+import { errorJson, oauthErrorPage } from "./lib/errors";
+import { escapeHtml } from "./lib/html";
 import { calculate } from "./lib/calculations";
 import {
   connectionStatus,
   createAuthUrl,
   exchangeCode,
   fortnoxRequest,
-  uploadInboxFile,
-  type WorkerEnv
+  uploadInboxFile
 } from "./lib/fortnox";
+import { requireCloudflareAccess } from "./lib/security";
 import { sha256Hex } from "./lib/crypto";
 
-const app = new Hono<{ Bindings: WorkerEnv }>();
+const app = new Hono<{ Bindings: Env }>();
 
-app.use("/api/*", cors());
-
-app.use("/api/*", async (c, next) => {
-  if (c.env.APP_ENV === "test") {
-    await next();
-    return;
-  }
-  const key = c.req.header("x-admin-api-key");
-  if (!key || key !== c.env.ADMIN_API_KEY) return c.json({ error: "Unauthorized" }, 401);
-  await next();
-});
+app.onError((error, c) => errorJson(c, error));
+app.use("*", requireCloudflareAccess());
 
 app.get("/api/health", (c) => c.json({ ok: true, env: c.env.APP_ENV, now: new Date().toISOString() }));
 
@@ -50,12 +42,12 @@ app.get("/auth/fortnox/start", async (c) => c.redirect(await createAuthUrl(c.env
 app.get("/auth/fortnox/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
-  if (!code || !state) return c.text("Missing OAuth code/state", 400);
+  if (!code || !state) return oauthErrorPage();
   try {
     await exchangeCode(c.env, code, state);
     return c.redirect(`${c.env.APP_BASE_URL}/integration?connected=1`);
-  } catch (error) {
-    return c.text(error instanceof Error ? error.message : "OAuth error", 500);
+  } catch {
+    return oauthErrorPage();
   }
 });
 
@@ -239,14 +231,18 @@ app.get("/sign/:token", async (c) => {
     hash
   );
   if (!offer) return c.text("Ogiltig eller utgången offertlänk.", 404);
+  const title = escapeHtml(offer.title || "Offert");
+  const customerName = escapeHtml(offer.customer_name);
+  const status = escapeHtml(offer.status);
+  const amount = escapeHtml(Number(offer.total).toLocaleString("sv-SE"));
   return c.html(`<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
   <title>Acceptera offert</title><style>body{font-family:system-ui;background:#f4f2ee;color:#171717;max-width:720px;margin:50px auto;padding:24px}
   .card{background:white;border:1px solid #ddd7cf;border-radius:18px;padding:32px}.amount{font-size:34px;font-weight:750}
   input{width:100%;box-sizing:border-box;padding:12px;margin:6px 0 14px;border:1px solid #bbb;border-radius:9px}
   button{padding:13px 20px;background:#171717;color:#fff;border:0;border-radius:9px;font-weight:650}</style></head><body>
-  <div class="card"><small>WEBBLYFTET · TEST</small><h1>${offer.title || "Offert"}</h1>
-  <p>Kund: ${offer.customer_name}</p><p class="amount">${Number(offer.total).toLocaleString("sv-SE")} kr</p>
-  <p>Status: ${offer.status}</p>
+  <div class="card"><small>WEBBLYFTET · TEST</small><h1>${title}</h1>
+  <p>Kund: ${customerName}</p><p class="amount">${amount} kr</p>
+  <p>Status: ${status}</p>
   <form method="post"><label>Namn</label><input name="name" required>
   <label>E-post</label><input type="email" name="email" required>
   <label><input type="checkbox" required style="width:auto"> Jag accepterar offerten och villkoren.</label><br><br>
@@ -372,7 +368,7 @@ app.get("/api/receipts/:id/file", async (c) => {
   if (!object) return c.json({ error: "File missing" }, 404);
   const headers = new Headers();
   object.writeHttpMetadata(headers);
-  headers.set("Content-Disposition", `inline; filename="${receipt.filename}"`);
+  headers.set("Content-Disposition", `inline; filename="${String(receipt.filename).replace(/["\r\n]/g, "_")}"`);
   return new Response(object.body, { headers });
 });
 

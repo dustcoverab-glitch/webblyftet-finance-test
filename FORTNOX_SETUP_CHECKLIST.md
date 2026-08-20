@@ -25,6 +25,9 @@
 - [ ] D1 migration körd
 - [ ] TOKEN_ENCRYPTION_KEY_BASE64 skapad med 32 random bytes
 - [ ] APP_BASE_URL uppdaterad
+- [ ] Cloudflare Access application skapad för hela testdomänen
+- [ ] Cloudflare Access policy begränsar vilka testare som får åtkomst
+- [ ] Worker-route pekar på den separata Finance Test-Workern
 - [ ] OAuth testad
 - [ ] Kund push testad
 - [ ] Kund pull testad
@@ -35,4 +38,4 @@
 - [ ] Receipt upload testad
 - [ ] Supplier invoice pull testad
 - [ ] Voucher pull testad
-- [ ] Cloudflare Access eller annan auth aktiverad före skarp data
+- [ ] Inga riktiga Fortnox-data används i testmiljön

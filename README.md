@@ -1,6 +1,6 @@
 # Webblyftet Finance Test
 
-Separat testprojekt för Webblyftets ekonomiportal. Tanken är att användaren arbetar i Webblyftets UI medan Fortnox är ekonomisk system-of-record.
+Separat testprojekt för Webblyftets ekonomiportal. Projektet ska hållas helt fristående från `webblyftet-portal` och använder egna Cloudflare-resurser för Worker, D1, R2 och testdomän.
 
 ## Ingår
 
@@ -9,116 +9,173 @@ Separat testprojekt för Webblyftets ekonomiportal. Tanken är att användaren a
 - D1 för lokal metadata och synkstatus
 - R2 för kvitton/underlag
 - Fortnox OAuth2 Authorization Code Flow med service account
-- Krypterad tokenlagring (AES-GCM)
+- Fortnox client credentials-tokenflöde efter hämtad `tenantId`
+- Krypterad tokenlagring med AES-GCM
 - Kundregister + push/pull mot Fortnox
 - Offertskapande + synk till Fortnox
 - Offertacceptans med tokenbaserad audit trail
-- Offert → faktura via Fortnox
+- Offert till faktura via Fortnox
 - Fakturasynk och betalstatus
-- Kvitto-/underlagsuppladdning
+- Kvitto-/underlagsuppladdning till Fortnox Inbox
 - Leverantörsfakturor från Fortnox
 - Verifikationsvy från Fortnox
 - API/synklogg
-- Testmiljömarkering
 
 ## Viktig arkitektur
 
-Fortnox är system of record för:
-- kundfakturor
-- bokföring/verifikationer
-- leverantörsfakturor
-- betalstatus
+Fortnox är system of record för kundfakturor, bokföring/verifikationer, leverantörsfakturor och betalstatus. Webblyftet Finance Test äger UI, workflow, lokal metadata, offertacceptans, interna anteckningar, R2-underlag och integrationslogg.
 
-Webblyftet äger:
-- UI
-- workflow
-- lokal metadata
-- offertacceptans
-- interna anteckningar
-- R2-underlag
-- integrationslogg
+Bygg inte parallell juridisk bokföring i D1.
 
-Bygg INTE parallell juridisk bokföring i D1.
-
-## 1. Förutsättningar
+## Förutsättningar
 
 - Node 20+
 - Cloudflare-konto
 - Fortnox Developer Portal
-- Fortnox-moduler/licenser för de resurser/scopes som ska användas
+- Fortnox-moduler/licenser för de resurser/scopes som ska testas
 
-## 2. Fortnox Developer Portal
-
-Skapa integration: `Webblyftet Finance Test`.
-
-Redirect URI lokalt:
-`http://localhost:8787/auth/fortnox/callback`
-
-Redirect URI efter deploy:
-`https://DIN-TESTDOMAN/auth/fortnox/callback`
-
-Scopes i `wrangler.jsonc`:
-`companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print`
-
-Använd bara scopes ni faktiskt har licens för.
-
-## 3. Cloudflare setup
+## Lokal utveckling
 
 ```bash
 npm install
-npx wrangler login
-
-npx wrangler d1 create webblyftet-finance-test
-# Kopiera database_id till wrangler.jsonc
-
-npx wrangler r2 bucket create webblyftet-finance-test-receipts
-
-npm run db:migrate:local
 npm run cf-types
+cp .dev.vars.example .dev.vars
 ```
 
-Skapa `.dev.vars` från `.dev.vars.example`.
+Skapa en lokal krypteringsnyckel:
 
-Generera krypteringsnyckel:
 ```bash
 openssl rand -base64 32
 ```
 
-Lokal utveckling körs enklast i två terminaler:
+Fyll i `.dev.vars` lokalt. Filen är gitignored och får aldrig committas.
 
-Terminal A:
+Lokal utveckling tillåts utan Cloudflare Access när `APP_ENV=local`.
+
 ```bash
 npm run build
 npm run dev:worker
 ```
 
-Terminal B, om du vill ha Vite HMR:
+Valfritt för Vite HMR:
+
 ```bash
 npm run dev
 ```
 
-Vite proxar `/api`, `/auth`, `/sign` till Worker på port 8787.
+Vite proxar `/api`, `/auth` och `/sign` till Worker på port 8787.
 
-## 4. Worker secrets inför deploy
+## Cloudflare-resurser
+
+`wrangler.jsonc` är source of truth.
+
+Local:
+- Worker: `webblyftet-finance-test-local`
+- D1: `webblyftet-finance-test-local`
+- R2: `webblyftet-finance-test-local-receipts`
+
+Test:
+- Worker: `webblyftet-finance-test`
+- D1: `webblyftet-finance-test`
+- R2: `webblyftet-finance-test-receipts`
+
+Framtida production:
+- Worker: `webblyftet-finance-production`
+- D1: `webblyftet-finance-production`
+- R2: `webblyftet-finance-production-receipts`
+
+Skapa resurserna separat och kopiera respektive `database_id` till rätt miljö i `wrangler.jsonc`.
 
 ```bash
-npx wrangler secret put FORTNOX_CLIENT_ID
-npx wrangler secret put FORTNOX_CLIENT_SECRET
-npx wrangler secret put TOKEN_ENCRYPTION_KEY_BASE64
-npx wrangler secret put ADMIN_API_KEY
+npx wrangler d1 create webblyftet-finance-test-local
+npx wrangler d1 create webblyftet-finance-test
+npx wrangler r2 bucket create webblyftet-finance-test-local-receipts
+npx wrangler r2 bucket create webblyftet-finance-test-receipts
 ```
 
-Uppdatera `APP_BASE_URL` till testdomänen.
+## Secrets
 
-Migrera och deploya:
+Required secrets deklareras i `wrangler.jsonc`:
+
+- `FORTNOX_CLIENT_ID`
+- `FORTNOX_CLIENT_SECRET`
+- `TOKEN_ENCRYPTION_KEY_BASE64`
+
+Sätt dem per miljö. Exempel för test:
+
 ```bash
-npm run db:migrate:remote
+npx wrangler secret put FORTNOX_CLIENT_ID --env test
+npx wrangler secret put FORTNOX_CLIENT_SECRET --env test
+npx wrangler secret put TOKEN_ENCRYPTION_KEY_BASE64 --env test
+```
+
+Inga secrets skickas till frontend. Browsern autentiseras inte med `x-admin-api-key`; deployad testmiljö ska skyddas med Cloudflare Access framför hela applikationen.
+
+## Cloudflare Access
+
+För deployad test/staging ska Cloudflare Access ligga framför hela testsidan.
+
+1. Skapa en Access application i Cloudflare Zero Trust för testdomänen, till exempel `finance-test.example.se`.
+2. Sätt applikationens policy till de användare/grupper som får testa Finance Test.
+3. Skydda hela origin/appens path, inte bara `/api`.
+4. Se till att Worker-routen pekar på den separata test-Workern `webblyftet-finance-test`.
+5. Behåll `APP_ENV=test` i testmiljön.
+
+Workern kräver Cloudflare Access identity headers när `APP_ENV` inte är `local`. Saknas Access-header får klienten HTTP 403 med ett neutralt fel. Lokalt utvecklingsläge är undantaget för att `wrangler dev` ska fungera utan Access.
+
+## Fortnox Developer Portal
+
+Skapa integration: `Webblyftet Finance Test`.
+
+Redirect URI lokalt:
+
+```text
+http://localhost:8787/auth/fortnox/callback
+```
+
+Redirect URI efter deploy:
+
+```text
+https://DIN-TESTDOMAN/auth/fortnox/callback
+```
+
+Redirect URI byggs konsekvent från `APP_BASE_URL` + `/auth/fortnox/callback`, så Fortnox-konfigurationen måste matcha exakt.
+
+Scopes i `wrangler.jsonc`:
+
+```text
+companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print
+```
+
+Använd bara scopes ni faktiskt har licens för.
+
+Fortnox service-account-flöde:
+
+1. Kör initial OAuth authorization code med `account_type=service`.
+2. Hämta och lagra `tenantId` via `companyinformation`.
+3. När `tenantId` finns används Fortnox client credentials med `TenantId` för nya access tokens.
+4. Refresh token behålls endast som kompatibilitetsfallback om client credentials inte fungerar.
+
+## Deploy
+
+```bash
+npm run cf-types
+npm run typecheck
+npm test
+npm run build
+npm run db:migrate:test
 npm run deploy
 ```
 
-## 5. Testordning
+`deploy` deployar `--env test`. Production har separat kommando och separata bindings:
 
-1. Öppna `/integration`
+```bash
+npm run deploy:production
+```
+
+## Testordning
+
+1. Öppna `/integration` bakom Cloudflare Access
 2. Anslut Fortnox
 3. Hämta kunder
 4. Skapa testkund
@@ -133,45 +190,27 @@ npm run deploy
 13. Hämta leverantörsfakturor
 14. Hämta verifikationer
 
-## Ej produktionsklart ännu
-
-### Fortnox Inbox-upload
-`POST /api/receipts/:id/push-inbox` är medvetet avstängd med HTTP 501 tills Codex verifierat aktuell multipart-specifikation mot Fortnox OpenAPI. Detta är bättre än att gissa på ett filuppladdningskontrakt.
-
-### BankID
-Offertacceptansen i denna scaffold är en enkel elektronisk acceptans med audit trail:
-- namn
-- e-post
-- timestamp
-- IP
-- user-agent
-- one-time token
-
-Det är INTE BankID eller kvalificerad elektronisk signatur. Koppla BankID/e-sign-provider separat om det krävs.
-
-### Autentisering
-I `APP_ENV=test` är API:t öppet för att snabbt få sandboxen att fungera. Innan produktion:
-- lägg Cloudflare Access framför hela testsidan, eller
-- implementera er befintliga portal-auth
-- sätt `APP_ENV=production`
-
-### Fortnox endpoint-kontrakt
-Fortnox ändrar API-fält över tid. Codex ska läsa aktuell OpenAPI innan deploy och verifiera payloads för:
-- Offers
-- Create invoice from offer
-- Supplier invoices
-- Vouchers
-- Inbox/file connections
-
-## Datamodell
-
-Se `migrations/0001_init.sql`.
+Rör inte riktiga Fortnox-data i den här testmiljön.
 
 ## Säkerhet
 
-- inga secrets i repo
-- OAuth state med 10 min expiry
+- `.dev.vars` är gitignored
+- inga secrets eller tokens i repo
+- Cloudflare Access skyddar deployad test/staging
+- inga credentials skickas till frontend
+- OAuth state är one-time och rensas vid expiry
+- callback visar neutral felsida vid fel
 - access/refresh tokens krypteras AES-GCM
+- Fortnox client credentials används långsiktigt efter `tenantId`
+- sync-loggar får request/sync-ID men inte Authorization headers eller tokens
 - R2-filer exponeras endast genom Worker route
-- structured sync log
-- separerad testdatabas och testbucket
+- signerade offertvärden HTML-escapas innan rendering
+
+## Kvar innan skarp test
+
+- Ersätt placeholder-D1-ID:n i `wrangler.jsonc`
+- Skapa testdomän och Worker-route
+- Konfigurera Cloudflare Access för testdomänen
+- Sätt Cloudflare secrets i rätt miljö
+- Lägg Fortnox redirect URI exakt enligt testdomänen
+- Säkerställ Fortnox-licenser/scopes för alla endpoints som testas

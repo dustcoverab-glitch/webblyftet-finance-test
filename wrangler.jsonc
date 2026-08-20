@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "webblyftet-finance-test",
+  "name": "webblyftet-finance-test-local",
   "main": "src/worker.ts",
   "compatibility_date": "2026-08-20",
   "compatibility_flags": ["nodejs_compat"],
@@ -8,12 +8,12 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/auth/*", "/sign/*"]
+    "run_worker_first": ["/*"]
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "webblyftet-finance-test",
+      "database_name": "webblyftet-finance-test-local",
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
       "migrations_dir": "migrations"
     }
@@ -21,16 +21,83 @@
   "r2_buckets": [
     {
       "binding": "RECEIPTS",
-      "bucket_name": "webblyftet-finance-test-receipts"
+      "bucket_name": "webblyftet-finance-test-local-receipts"
     }
   ],
+  "secrets": {
+    "required": [
+      "FORTNOX_CLIENT_ID",
+      "FORTNOX_CLIENT_SECRET",
+      "TOKEN_ENCRYPTION_KEY_BASE64"
+    ]
+  },
   "vars": {
-    "APP_ENV": "test",
+    "APP_ENV": "local",
     "APP_BASE_URL": "http://localhost:8787",
     "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
   },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  "env": {
+    "test": {
+      "name": "webblyftet-finance-test",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "webblyftet-finance-test",
+          "database_id": "REPLACE_WITH_TEST_D1_DATABASE_ID",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "RECEIPTS",
+          "bucket_name": "webblyftet-finance-test-receipts"
+        }
+      ],
+      "secrets": {
+        "required": [
+          "FORTNOX_CLIENT_ID",
+          "FORTNOX_CLIENT_SECRET",
+          "TOKEN_ENCRYPTION_KEY_BASE64"
+        ]
+      },
+      "vars": {
+        "APP_ENV": "test",
+        "APP_BASE_URL": "https://DIN-TESTDOMAN",
+        "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
+      }
+    },
+    "production": {
+      "name": "webblyftet-finance-production",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "webblyftet-finance-production",
+          "database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "RECEIPTS",
+          "bucket_name": "webblyftet-finance-production-receipts"
+        }
+      ],
+      "secrets": {
+        "required": [
+          "FORTNOX_CLIENT_ID",
+          "FORTNOX_CLIENT_SECRET",
+          "TOKEN_ENCRYPTION_KEY_BASE64"
+        ]
+      },
+      "vars": {
+        "APP_ENV": "production",
+        "APP_BASE_URL": "https://DIN-PRODUKTIONSDOMAN",
+        "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
+      }
+    }
   }
 }
