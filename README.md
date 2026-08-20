@@ -190,7 +190,7 @@ Implementerat nu:
 - `POST /api/customers/:id/payment-method/setup`
 - `POST /webhooks/stripe`
 
-SetupIntent används som backendgrund för att senare kunna registrera företagskort. Backend skapar en lokal `payment_method_setup_sessions`-rad och använder dess id som Stripe idempotency key. Retries för samma aktiva session återanvänder sparat Stripe SetupIntent ID och `client_secret` i stället för att skapa parallella SetupIntents. Frontend får bara `client_secret` för Stripe-klientflödet. Råa kortnummer får aldrig passera Worker eller D1.
+SetupIntent används som backendgrund för att senare kunna registrera företagskort. Backend skapar en lokal `payment_method_setup_sessions`-rad och använder dess id som Stripe idempotency key. Retries för samma aktiva session återanvänder sparat Stripe SetupIntent ID, hämtar aktuell `client_secret` från Stripe och skapar inte parallella SetupIntents. `client_secret` sparas inte permanent i D1 och får aldrig loggas. Frontend får bara `client_secret` för Stripe-klientflödet. Råa kortnummer får aldrig passera Worker eller D1.
 
 Förberedda webhook event-typer:
 

@@ -154,7 +154,6 @@ export async function resetTables(db = env.DB): Promise<void> {
       customer_id TEXT NOT NULL,
       stripe_customer_id TEXT NOT NULL,
       stripe_setup_intent_id TEXT,
-      client_secret TEXT,
       status TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

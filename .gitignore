@@ -6,5 +6,6 @@ dist
 .wrangler
 .DS_Store
 *.log
+*.cpuprofile
 *.pem
 *.key

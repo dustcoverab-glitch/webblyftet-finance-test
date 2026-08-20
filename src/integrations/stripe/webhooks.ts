@@ -34,11 +34,21 @@ export async function recordIntegrationEvent(env: Env, event: Stripe.Event) {
   if (existing.status === "PROCESSED") return { duplicate: true, row: existing };
   if (existing.status === "PROCESSING") return { duplicate: true, row: existing };
 
-  await env.DB.prepare(
+  const claim = await env.DB.prepare(
     `UPDATE integration_events
      SET status='PROCESSING', payload_json=?, error_message=NULL, processed_at=NULL
      WHERE provider=? AND provider_event_id=? AND status IN ('RECEIVED','FAILED')`
   ).bind(JSON.stringify(event), "STRIPE", event.id).run();
+  if ((claim.meta.changes ?? 0) !== 1) {
+    const row = await one<any>(
+      env.DB,
+      "SELECT * FROM integration_events WHERE provider=? AND provider_event_id=?",
+      "STRIPE",
+      event.id
+    );
+    if (row?.status === "PROCESSED" || row?.status === "PROCESSING") return { duplicate: true, row };
+    throw new PublicAppError(409, "Webhook-event kunde inte claimas för processing.");
+  }
 
   const row = await one<any>(
     env.DB,
@@ -98,7 +108,7 @@ async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, statu
     ? intent.metadata.webblyftet_customer_id
     : null;
   if (!customerId) return;
-  const payment = await upsertPayment(env, {
+  let payment = await upsertPayment(env, {
     customer_id: customerId,
     amount: intent.amount_received || intent.amount,
     currency: intent.currency.toUpperCase(),
@@ -107,6 +117,26 @@ async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, statu
     provider_payment_id: intent.id,
     paid_at: status === "SUCCEEDED" ? new Date((intent.created ?? Math.floor(Date.now() / 1000)) * 1000).toISOString() : null
   });
+  if (status === "SUCCEEDED" && payment?.status === "FAILED") {
+    await upsertPayment(env, {
+      customer_id: customerId,
+      amount: intent.amount_received || intent.amount,
+      currency: intent.currency.toUpperCase(),
+      status: "PROCESSING",
+      provider: "STRIPE",
+      provider_payment_id: intent.id,
+      paid_at: null
+    });
+    payment = await upsertPayment(env, {
+      customer_id: customerId,
+      amount: intent.amount_received || intent.amount,
+      currency: intent.currency.toUpperCase(),
+      status: "SUCCEEDED",
+      provider: "STRIPE",
+      provider_payment_id: intent.id,
+      paid_at: new Date((intent.created ?? Math.floor(Date.now() / 1000)) * 1000).toISOString()
+    });
+  }
   await recordPaymentAttempt(env, {
     payment_id: payment!.id,
     provider: "STRIPE",
@@ -114,7 +144,7 @@ async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, statu
     status,
     payload_json: { stripe_payment_intent_id: intent.id }
   });
-  if (status === "SUCCEEDED") {
+  if (payment?.status === "SUCCEEDED") {
     const gross = intent.amount_received || intent.amount;
     await createAccountingEvent(env, {
       event_type: "PAYMENT_RECEIVED",

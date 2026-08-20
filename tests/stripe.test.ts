@@ -4,7 +4,7 @@ import worker from "../src/worker";
 import { createPrice, createProduct, createSubscription } from "../src/core/finance";
 import { createOrReuseStripeCustomer } from "../src/integrations/stripe/customers";
 import { createPaymentMethodSetupIntent } from "../src/integrations/stripe/subscriptions";
-import { processStripeEvent } from "../src/integrations/stripe/webhooks";
+import { processStripeEvent, recordIntegrationEvent } from "../src/integrations/stripe/webhooks";
 import { resetTables, workerEnv } from "./helpers";
 
 async function hmacHex(secret: string, payload: string): Promise<string> {
@@ -78,6 +78,27 @@ describe("Stripe integration foundation", () => {
     expect(duplicate).toMatchObject({ received: true, duplicate: true });
   });
 
+  it("claims concurrent deliveries so only one processor may continue", async () => {
+    const event = {
+      id: "evt_claim_race",
+      object: "event",
+      type: "payment_intent.succeeded",
+      data: { object: { id: "pi_claim_race", object: "payment_intent", metadata: {} } }
+    };
+
+    const claims = await Promise.all([
+      recordIntegrationEvent(workerEnv(), event as any),
+      recordIntegrationEvent(workerEnv(), event as any)
+    ]);
+
+    expect(claims.filter((claim) => !claim.duplicate)).toHaveLength(1);
+    expect(claims.filter((claim) => claim.duplicate)).toHaveLength(1);
+    const row = await env.DB.prepare("SELECT status FROM integration_events WHERE provider_event_id=?")
+      .bind("evt_claim_race")
+      .first<{ status: string }>();
+    expect(row?.status).toBe("PROCESSING");
+  });
+
   it("marks failed webhook processing as FAILED, retries it, then treats processed duplicates as no-op", async () => {
     await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
     await env.DB.prepare("DROP TABLE accounting_events").run();
@@ -132,19 +153,22 @@ describe("Stripe integration foundation", () => {
     expect(JSON.parse(accounting!.payload_json)).toMatchObject({ accounting_semantics: "SETTLEMENT" });
   });
 
-  it("creates one local SetupIntent session and reuses it on retry", async () => {
+  it("creates one local SetupIntent session and retrieves the existing intent on retry without storing client_secret", async () => {
     await env.DB.prepare("INSERT INTO customers(id,name,stripe_customer_id) VALUES (?,?,?)")
       .bind("cus_test", "Acme AB", "cus_stripe_test")
       .run();
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      id: "seti_test_1",
-      object: "setup_intent",
-      client_secret: "seti_secret_1",
-      status: "requires_payment_method"
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json", "request-id": "req_test" }
-    }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      return new Response(JSON.stringify({
+        id: "seti_test_1",
+        object: "setup_intent",
+        client_secret: method === "POST" ? "seti_secret_created" : "seti_secret_retrieved",
+        status: method === "POST" ? "requires_payment_method" : "requires_action"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json", "request-id": "req_test" }
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const first = await createPaymentMethodSetupIntent(workerEnv({ STRIPE_SECRET_KEY: "test-placeholder" }), "cus_test");
@@ -152,7 +176,98 @@ describe("Stripe integration foundation", () => {
 
     expect(first.setup_session_id).toBe(second.setup_session_id);
     expect(second.reused).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(second.client_secret).toBe("seti_secret_retrieved");
+    const methods = fetchMock.mock.calls.map(([input, init]) => init?.method ?? (input instanceof Request ? input.method : "GET"));
+    expect(methods.filter((method) => method === "POST")).toHaveLength(1);
+    expect(methods.filter((method) => method === "GET")).toHaveLength(1);
+
+    const columns = await env.DB.prepare("PRAGMA table_info(payment_method_setup_sessions)").all<{ name: string }>();
+    const session = await env.DB.prepare("SELECT * FROM payment_method_setup_sessions LIMIT 1").first<Record<string, unknown>>();
+    const serializedLogs = JSON.stringify(await Promise.all([
+      env.DB.prepare("SELECT * FROM audit_log").all(),
+      env.DB.prepare("SELECT * FROM integration_events").all(),
+      env.DB.prepare("SELECT * FROM sync_log").all()
+    ]));
+    expect(columns.results.map((column) => column.name)).not.toContain("client_secret");
+    expect(JSON.stringify(session)).not.toContain("seti_secret");
+    expect(serializedLogs).not.toContain("seti_secret");
+    expect(session?.status).toBe("REQUIRES_ACTION");
+  });
+
+  it("moves a failed PaymentIntent to succeeded on a later verified succeeded event and ignores a late failure", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
+
+    await processStripeEvent(workerEnv(), {
+      id: "evt_pi_failed_first",
+      object: "event",
+      type: "payment_intent.payment_failed",
+      data: {
+        object: {
+          id: "pi_lifecycle",
+          object: "payment_intent",
+          amount: 29500,
+          amount_received: 0,
+          currency: "sek",
+          created: 1787241600,
+          latest_charge: "ch_failed_first",
+          metadata: { webblyftet_customer_id: "cus_test" }
+        }
+      }
+    } as any);
+    let payment = await env.DB.prepare("SELECT id,status FROM payments WHERE provider_payment_id=?")
+      .bind("pi_lifecycle")
+      .first<{ id: string; status: string }>();
+    let accountingCount = await env.DB.prepare("SELECT COUNT(*) count FROM accounting_events").first<{ count: number }>();
+    expect(payment?.status).toBe("FAILED");
+    expect(accountingCount?.count).toBe(0);
+
+    await processStripeEvent(workerEnv(), {
+      id: "evt_pi_succeeded_later",
+      object: "event",
+      type: "payment_intent.succeeded",
+      data: {
+        object: {
+          id: "pi_lifecycle",
+          object: "payment_intent",
+          amount: 29500,
+          amount_received: 29500,
+          currency: "sek",
+          created: 1787241600,
+          latest_charge: "ch_succeeded_later",
+          metadata: { webblyftet_customer_id: "cus_test" }
+        }
+      }
+    } as any);
+    payment = await env.DB.prepare("SELECT id,status FROM payments WHERE provider_payment_id=?")
+      .bind("pi_lifecycle")
+      .first<{ id: string; status: string }>();
+    accountingCount = await env.DB.prepare("SELECT COUNT(*) count FROM accounting_events").first<{ count: number }>();
+    expect(payment?.status).toBe("SUCCEEDED");
+    expect(accountingCount?.count).toBe(1);
+
+    await processStripeEvent(workerEnv(), {
+      id: "evt_pi_failed_late",
+      object: "event",
+      type: "payment_intent.payment_failed",
+      data: {
+        object: {
+          id: "pi_lifecycle",
+          object: "payment_intent",
+          amount: 29500,
+          amount_received: 0,
+          currency: "sek",
+          created: 1787241600,
+          latest_charge: "ch_failed_late",
+          metadata: { webblyftet_customer_id: "cus_test" }
+        }
+      }
+    } as any);
+    payment = await env.DB.prepare("SELECT id,status FROM payments WHERE provider_payment_id=?")
+      .bind("pi_lifecycle")
+      .first<{ id: string; status: string }>();
+    accountingCount = await env.DB.prepare("SELECT COUNT(*) count FROM accounting_events").first<{ count: number }>();
+    expect(payment?.status).toBe("SUCCEEDED");
+    expect(accountingCount?.count).toBe(1);
   });
 
   it("syncs Stripe subscription status only for a known local subscription", async () => {

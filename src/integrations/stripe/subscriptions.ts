@@ -19,11 +19,16 @@ export async function createPaymentMethodSetupIntent(env: Env, customerId: strin
     customer.id,
     nowIso
   );
-  if (existing?.stripe_setup_intent_id && existing?.client_secret) {
+  const stripe = stripeClient(env);
+  if (existing?.stripe_setup_intent_id) {
+    const intent = await stripe.setupIntents.retrieve(existing.stripe_setup_intent_id);
+    await env.DB.prepare(
+      "UPDATE payment_method_setup_sessions SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+    ).bind(setupIntentStatus(intent.status), existing.id).run();
     return {
       setup_session_id: existing.id,
-      setup_intent_id: existing.stripe_setup_intent_id,
-      client_secret: existing.client_secret,
+      setup_intent_id: intent.id,
+      client_secret: intent.client_secret,
       reused: true
     };
   }
@@ -37,7 +42,6 @@ export async function createPaymentMethodSetupIntent(env: Env, customerId: strin
     ).bind(sessionId, customer.id, customer.stripe_customer_id, "CREATED", expiresAt).run();
   }
 
-  const stripe = stripeClient(env);
   try {
     const intent = await stripe.setupIntents.create(
       {
@@ -57,9 +61,9 @@ export async function createPaymentMethodSetupIntent(env: Env, customerId: strin
     );
     await env.DB.prepare(
       `UPDATE payment_method_setup_sessions
-       SET stripe_setup_intent_id=?, client_secret=?, status=?, updated_at=CURRENT_TIMESTAMP
+       SET stripe_setup_intent_id=?, status=?, updated_at=CURRENT_TIMESTAMP
        WHERE id=?`
-    ).bind(intent.id, intent.client_secret ?? null, setupIntentStatus(intent.status), sessionId).run();
+    ).bind(intent.id, setupIntentStatus(intent.status), sessionId).run();
     return {
       setup_session_id: sessionId,
       setup_intent_id: intent.id,
@@ -77,9 +81,13 @@ export async function createPaymentMethodSetupIntent(env: Env, customerId: strin
 function setupIntentStatus(status: string): string {
   switch (status) {
     case "requires_payment_method":
-    case "requires_confirmation":
-    case "requires_action":
       return "REQUIRES_PAYMENT_METHOD";
+    case "requires_confirmation":
+      return "REQUIRES_CONFIRMATION";
+    case "requires_action":
+      return "REQUIRES_ACTION";
+    case "processing":
+      return "PROCESSING";
     case "succeeded":
       return "SUCCEEDED";
     case "canceled":
