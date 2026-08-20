@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { cloudflareAccessRequired } from "./config";
 
 export function isLocalEnvironment(env: Env): boolean {
   return env.APP_ENV === "local";
@@ -12,7 +13,7 @@ export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> 
       return;
     }
 
-    if (isLocalEnvironment(c.env)) {
+    if (isLocalEnvironment(c.env) || !cloudflareAccessRequired(c.env)) {
       await next();
       return;
     }

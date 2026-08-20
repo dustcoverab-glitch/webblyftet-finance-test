@@ -78,6 +78,36 @@ describe("Stripe integration foundation", () => {
     expect(duplicate).toMatchObject({ received: true, duplicate: true });
   });
 
+  it("fails safely when Stripe webhook secret is not configured", async () => {
+    const response = await worker.fetch(new Request("https://finance.example/webhooks/stripe", {
+      method: "POST",
+      headers: {
+        "stripe-signature": "t=1787241600,v1=not-a-real-signature",
+        "content-type": "application/json"
+      },
+      body: "{}"
+    }), workerEnv({ APP_ENV: "test", STRIPE_SECRET_KEY: "", STRIPE_WEBHOOK_SECRET: "" } as any), {} as ExecutionContext);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error: "Stripe är inte konfigurerat ännu." });
+  });
+
+  it("reports Stripe as unconfigured without blocking the app", async () => {
+    const response = await worker.fetch(
+      new Request("https://finance.example/api/stripe/config", {
+        headers: { "cf-access-authenticated-user-email": "tester@example.com" }
+      }),
+      workerEnv({ APP_ENV: "test", STRIPE_SECRET_KEY: "", STRIPE_WEBHOOK_SECRET: "" } as any),
+      {} as ExecutionContext
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      configured: false,
+      message: "Stripe är inte konfigurerat ännu."
+    });
+  });
+
   it("claims concurrent deliveries so only one processor may continue", async () => {
     const event = {
       id: "evt_claim_race",

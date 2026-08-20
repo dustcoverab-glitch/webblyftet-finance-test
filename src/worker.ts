@@ -38,6 +38,7 @@ import {
 } from "./integrations/stripe/subscriptions";
 import { constructStripeWebhookEvent, processStripeEvent } from "./integrations/stripe/webhooks";
 import { requireCloudflareAccess } from "./lib/security";
+import { isStripeConfigured, isStripePublishableKeyConfigured } from "./lib/config";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -158,7 +159,12 @@ app.post("/api/customers/:id/payment-method/setup", async (c) => {
 });
 
 app.get("/api/stripe/config", async (c) => {
-  return c.json({ publishableKey: c.env.STRIPE_PUBLISHABLE_KEY ?? "" });
+  const configured = isStripeConfigured(c.env) && isStripePublishableKeyConfigured(c.env);
+  return c.json({
+    configured,
+    publishableKey: configured ? c.env.STRIPE_PUBLISHABLE_KEY : "",
+    message: configured ? undefined : "Stripe är inte konfigurerat ännu."
+  }, configured ? 200 : 503);
 });
 
 const productSchema = z.object({

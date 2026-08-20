@@ -26,17 +26,14 @@
   ],
   "secrets": {
     "required": [
-      "FORTNOX_CLIENT_ID",
-      "FORTNOX_CLIENT_SECRET",
-      "TOKEN_ENCRYPTION_KEY_BASE64",
-      "STRIPE_SECRET_KEY",
-      "STRIPE_WEBHOOK_SECRET"
+      "TOKEN_ENCRYPTION_KEY_BASE64"
     ]
   },
   "vars": {
     "APP_ENV": "local",
     "APP_BASE_URL": "http://localhost:8787",
     "STRIPE_PUBLISHABLE_KEY": "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
+    "REQUIRE_CLOUDFLARE_ACCESS": "false",
     "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
   },
   "observability": {
@@ -46,6 +43,7 @@
   "env": {
     "test": {
       "name": "webblyftet-finance-test",
+      "workers_dev": true,
       "d1_databases": [
         {
           "binding": "DB",
@@ -62,17 +60,14 @@
       ],
       "secrets": {
         "required": [
-          "FORTNOX_CLIENT_ID",
-          "FORTNOX_CLIENT_SECRET",
-          "TOKEN_ENCRYPTION_KEY_BASE64",
-          "STRIPE_SECRET_KEY",
-          "STRIPE_WEBHOOK_SECRET"
+          "TOKEN_ENCRYPTION_KEY_BASE64"
         ]
       },
       "vars": {
         "APP_ENV": "test",
-        "APP_BASE_URL": "https://DIN-TESTDOMAN",
+        "APP_BASE_URL": "https://webblyftet-finance-test.webblyftet-finance-test.workers.dev",
         "STRIPE_PUBLISHABLE_KEY": "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
+        "REQUIRE_CLOUDFLARE_ACCESS": "false",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
     },
@@ -94,17 +89,14 @@
       ],
       "secrets": {
         "required": [
-          "FORTNOX_CLIENT_ID",
-          "FORTNOX_CLIENT_SECRET",
-          "TOKEN_ENCRYPTION_KEY_BASE64",
-          "STRIPE_SECRET_KEY",
-          "STRIPE_WEBHOOK_SECRET"
+          "TOKEN_ENCRYPTION_KEY_BASE64"
         ]
       },
       "vars": {
         "APP_ENV": "production",
         "APP_BASE_URL": "https://DIN-PRODUKTIONSDOMAN",
         "STRIPE_PUBLISHABLE_KEY": "pk_live_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
+        "REQUIRE_CLOUDFLARE_ACCESS": "true",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
     }

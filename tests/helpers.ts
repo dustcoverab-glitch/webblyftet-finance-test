@@ -10,7 +10,9 @@ export function testKey(): string {
   return bytesToBase64(new Uint8Array(32).fill(7));
 }
 
-export function workerEnv(overrides: Partial<Env> = {}): Env {
+type TestEnvOverrides = Partial<Env> & Record<string, string | undefined>;
+
+export function workerEnv(overrides: TestEnvOverrides = {}): Env {
   return {
     ...env,
     APP_ENV: "local",
@@ -23,7 +25,7 @@ export function workerEnv(overrides: Partial<Env> = {}): Env {
     STRIPE_WEBHOOK_SECRET: "test-placeholder",
     STRIPE_PUBLISHABLE_KEY: "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
     ...overrides
-  };
+  } as Env;
 }
 
 export async function resetTables(db = env.DB): Promise<void> {

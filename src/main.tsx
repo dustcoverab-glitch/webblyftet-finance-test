@@ -27,6 +27,13 @@ type Subscription = {
   id: string; customer_name: string; status: string; monthly_amount: number; current_period_end?: string;
   customer_id?: string; stripe_subscription_id?: string; cancel_at_period_end?: number; items: string | any[];
 };
+type IntegrationStatus = {
+  configured?: boolean;
+  connected: boolean;
+  company_name?: string;
+  tenant_id?: string;
+  scope?: string;
+};
 
 function money(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString("sv-SE", { style: "currency", currency: "SEK", maximumFractionDigits: 0 });
@@ -374,7 +381,11 @@ function PaymentMethodPage() {
     let card: any;
     let stripe: any;
     async function mount() {
-      const config = await api<{ publishableKey: string }>("/api/stripe/config");
+      const config = await api<{ configured: boolean; publishableKey: string; message?: string }>("/api/stripe/config");
+      if (!config.configured) {
+        setMessage(config.message ?? "Stripe är inte konfigurerat ännu.");
+        return;
+      }
       const session = await post<any>(`/api/customers/${customerId}/payment-method/setup`);
       if (!document.querySelector('script[src="https://js.stripe.com/v3/"]')) {
         await new Promise<void>((resolve, reject) => {
@@ -408,16 +419,19 @@ function PaymentMethodPage() {
 }
 
 function Integration(){
-  const [status,setStatus]=useState<any>(null); const [logs,setLogs]=useState<any[]>([]);
-  const load=async()=>{setStatus(await api("/api/integration/status"));setLogs(await api("/api/sync-log"));};
+  const [status,setStatus]=useState<IntegrationStatus|null>(null); const [stripeStatus,setStripeStatus]=useState<any>(null); const [logs,setLogs]=useState<any[]>([]);
+  const load=async()=>{setStatus(await api("/api/integration/status"));try{setStripeStatus(await api("/api/stripe/config"));}catch(error){setStripeStatus({configured:false,message:error instanceof Error ? error.message : "Stripe är inte konfigurerat ännu."});}setLogs(await api("/api/sync-log"));};
   useEffect(()=>{load().catch(console.error)},[]);
   return <>
     <PageHead title="Fortnox-integration" subtitle="OAuth2 service account, scopes och synklogg."/>
     <div className="twoCol">
-      <Card><h3>Anslutning</h3>{status?.connected ? <>
+      <Card><h3>Fortnox</h3>{status?.configured === false ? <>
+        <div className="connection"><div className="dot"></div><div><strong>Ej konfigurerad</strong><p>Fortnox Client ID och Client Secret saknas.</p></div></div>
+      </> : status?.connected ? <>
         <div className="connection"><div className="dot on"></div><div><strong>{status.company_name||"Fortnox ansluten"}</strong><p>Tenant {status.tenant_id||"—"}</p></div></div>
         <p className="muted">{status.scope}</p><button className="danger" onClick={async()=>{await post("/api/integration/disconnect"); await load();}}>Koppla från</button>
       </>:<><p>Ingen Fortnox-anslutning finns i testdatabasen.</p><a className="button" href="/auth/fortnox/start"><PlugZap size={16}/>Anslut Fortnox</a></>}</Card>
+      <Card><h3>Stripe</h3><div className="connection"><div className={`dot ${stripeStatus?.configured ? "on" : ""}`}></div><div><strong>{stripeStatus?.configured ? "Konfigurerad" : "Ej konfigurerad"}</strong><p>{stripeStatus?.configured ? "Testnycklar finns som Worker secrets." : "Stripe Secret Key och webhook secret saknas."}</p></div></div></Card>
       <Card><h3>Säkerhetsmodell</h3><ul className="checkList"><li><BadgeCheck size={16}/>Client secret lagras som Worker secret</li><li><BadgeCheck size={16}/>Tokens krypteras AES-GCM i D1</li><li><BadgeCheck size={16}/>OAuth state skyddar mot CSRF</li><li><BadgeCheck size={16}/>Testmiljö separerad från huvudportalen</li></ul></Card>
     </div>
     <Card><h3>API-logg</h3><table><thead><tr><th>Tid</th><th>Operation</th><th>Endpoint</th><th>Status</th></tr></thead><tbody>

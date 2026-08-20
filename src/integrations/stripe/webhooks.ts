@@ -4,14 +4,16 @@ import { createAccountingEvent, recordPaymentAttempt, upsertPayment } from "../.
 import { PublicAppError } from "../../lib/app-error";
 import { stripeClient, stripeWebhookCryptoProvider } from "./client";
 import { handledStripeEvents } from "./types";
+import { stripeWebhookSecret } from "../../lib/config";
 
 export async function constructStripeWebhookEvent(env: Env, rawBody: string, signature: string | null): Promise<Stripe.Event> {
+  const webhookSecret = stripeWebhookSecret(env);
   if (!signature) throw new PublicAppError(400, "Stripe-signatur saknas.");
   const stripe = stripeClient(env);
   return stripe.webhooks.constructEventAsync(
     rawBody,
     signature,
-    env.STRIPE_WEBHOOK_SECRET,
+    webhookSecret,
     undefined,
     stripeWebhookCryptoProvider()
   );

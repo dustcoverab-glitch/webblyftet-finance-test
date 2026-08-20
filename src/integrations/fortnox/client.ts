@@ -1,6 +1,7 @@
 import { decryptString, encryptString } from "../../lib/crypto";
 import { id, one } from "../../lib/db";
 import { PublicAppError } from "../../lib/app-error";
+import { fortnoxClientId, fortnoxClientSecret, isFortnoxConfigured, requireFortnoxConfigured } from "../../lib/config";
 
 type Connection = {
   id: string;
@@ -40,13 +41,14 @@ export async function cleanupExpiredOAuthStates(env: Env): Promise<void> {
 }
 
 export async function createAuthUrl(env: Env): Promise<string> {
+  requireFortnoxConfigured(env);
   await cleanupExpiredOAuthStates(env);
   const state = crypto.randomUUID();
   const expires = new Date(Date.now() + 10 * 60_000).toISOString();
   await env.DB.prepare("INSERT INTO oauth_states(state, expires_at) VALUES (?, ?)").bind(state, expires).run();
 
   const url = new URL(AUTH_URL);
-  url.searchParams.set("client_id", env.FORTNOX_CLIENT_ID);
+  url.searchParams.set("client_id", fortnoxClientId(env));
   url.searchParams.set("redirect_uri", fortnoxRedirectUri(env));
   url.searchParams.set("scope", env.FORTNOX_SCOPES);
   url.searchParams.set("state", state);
@@ -57,7 +59,7 @@ export async function createAuthUrl(env: Env): Promise<string> {
 }
 
 async function basicAuth(env: Env): Promise<string> {
-  return btoa(`${env.FORTNOX_CLIENT_ID}:${env.FORTNOX_CLIENT_SECRET}`);
+  return btoa(`${fortnoxClientId(env)}:${fortnoxClientSecret(env)}`);
 }
 
 export async function consumeOAuthState(env: Env, state: string, now = Date.now()): Promise<void> {
@@ -73,6 +75,7 @@ export async function consumeOAuthState(env: Env, state: string, now = Date.now(
 }
 
 export async function exchangeCode(env: Env, code: string, state: string) {
+  requireFortnoxConfigured(env);
   await cleanupExpiredOAuthStates(env);
   await consumeOAuthState(env, state);
 
@@ -220,6 +223,7 @@ export async function fortnoxRequest<T>(
   path: string,
   init: RequestInit & { json?: unknown } = {}
 ): Promise<T> {
+  requireFortnoxConfigured(env);
   const connection = await one<Connection>(
     env.DB,
     "SELECT id, tenant_id, access_token_enc, refresh_token_enc, token_expires_at, scope FROM fortnox_connections LIMIT 1"
@@ -274,6 +278,7 @@ export async function uploadInboxFile(
   file: File,
   folder: "Inbox_v" | "Inbox_s" | "Inbox_kf" | "Inbox_o" | "Inbox_of" = "Inbox_v"
 ) {
+  requireFortnoxConfigured(env);
   const connection = await one<Connection>(
     env.DB,
     "SELECT id, tenant_id, access_token_enc, refresh_token_enc, token_expires_at, scope FROM fortnox_connections LIMIT 1"
@@ -324,9 +329,10 @@ export async function uploadInboxFile(
 }
 
 export async function connectionStatus(env: Env) {
+  if (!isFortnoxConfigured(env)) return { configured: false, connected: false };
   const row = await one<any>(
     env.DB,
     "SELECT tenant_id, company_name, scope, connected_at, updated_at FROM fortnox_connections LIMIT 1"
   );
-  return row ? { connected: true, ...row } : { connected: false };
+  return row ? { configured: true, connected: true, ...row } : { configured: true, connected: false };
 }

@@ -18,7 +18,7 @@ describe("API health and Access middleware", () => {
   it("rejects deployed requests without Cloudflare Access identity headers", async () => {
     const response = await worker.fetch(
       new Request("https://finance-test.example/api/health"),
-      workerEnv({ APP_ENV: "test" }),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
       createExecutionContext()
     );
 
@@ -31,6 +31,16 @@ describe("API health and Access middleware", () => {
       headers: { "cf-access-authenticated-user-email": "tester@example.com" }
     });
     const response = await worker.fetch(request, workerEnv({ APP_ENV: "test" }), createExecutionContext());
+
+    expect(response.status).toBe(200);
+  });
+
+  it("can explicitly allow an initial workers.dev test deployment without Access", async () => {
+    const response = await worker.fetch(
+      new Request("https://finance-test.example/api/health"),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "false" } as any),
+      createExecutionContext()
+    );
 
     expect(response.status).toBe(200);
   });
@@ -52,7 +62,7 @@ describe("API health and Access middleware", () => {
           method: "POST",
           body: "{}"
         }),
-        workerEnv({ APP_ENV: "test" }),
+        workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
         createExecutionContext()
       );
       expect(response.status).toBe(403);
