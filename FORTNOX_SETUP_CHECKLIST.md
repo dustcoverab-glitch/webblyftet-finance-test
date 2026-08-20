@@ -1,0 +1,38 @@
+# Fortnox setup checklist
+
+- [ ] Developer Portal synlig i Fortnox
+- [ ] Integration `Webblyftet Finance Test` skapad
+- [ ] Client ID sparad som Cloudflare secret
+- [ ] Client Secret sparad som Cloudflare secret
+- [ ] Redirect URI matchar exakt
+- [ ] Service account aktiverat
+- [ ] `companyinformation` scope
+- [ ] `customer` scope
+- [ ] `offer` scope
+- [ ] `invoice` scope
+- [ ] `order` scope om offert/order-flöde används
+- [ ] `payment` scope
+- [ ] `supplier` scope
+- [ ] `supplierinvoice` scope
+- [ ] `bookkeeping` scope
+- [ ] `inbox` scope
+- [ ] `connectfile` scope
+- [ ] `settings` scope
+- [ ] `print` scope
+- [ ] Fortnox-licens finns för alla resursområden som testas
+- [ ] D1 skapad
+- [ ] R2 skapad
+- [ ] D1 migration körd
+- [ ] TOKEN_ENCRYPTION_KEY_BASE64 skapad med 32 random bytes
+- [ ] APP_BASE_URL uppdaterad
+- [ ] OAuth testad
+- [ ] Kund push testad
+- [ ] Kund pull testad
+- [ ] Offert push testad
+- [ ] Offertacceptans testad
+- [ ] Offer → invoice testad
+- [ ] Invoice pull/status testad
+- [ ] Receipt upload testad
+- [ ] Supplier invoice pull testad
+- [ ] Voucher pull testad
+- [ ] Cloudflare Access eller annan auth aktiverad före skarp data
