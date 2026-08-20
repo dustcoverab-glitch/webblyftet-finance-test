@@ -4,7 +4,6 @@ import { zValidator } from "@hono/zod-validator";
 import { all, id, one } from "./lib/db";
 import { errorJson, oauthErrorPage } from "./lib/errors";
 import { escapeHtml } from "./lib/html";
-import { calculate } from "./lib/calculations";
 import {
   createPrice,
   createProduct,
@@ -12,20 +11,33 @@ import {
   seedTestProducts
 } from "./core/finance";
 import {
+  acceptOfferToken,
+  createOffer as createBusinessOffer,
+  createOfferAcceptanceToken,
+  getCustomerDetail,
+  getOfferDetail,
+  getOfferForToken
+} from "./core/business-flow";
+import {
   connectionStatus,
   createAuthUrl,
   exchangeCode,
   uploadInboxFile
 } from "./integrations/fortnox/client";
 import { syncCustomerToFortnox, pullCustomersFromFortnox } from "./integrations/fortnox/customers";
-import { createInvoiceFromFortnoxOffer, syncOfferToFortnox } from "./integrations/fortnox/offers";
-import { pullInvoicesFromFortnox } from "./integrations/fortnox/invoices";
+import { syncOfferToFortnox } from "./integrations/fortnox/offers";
+import { pullInvoicesFromFortnox, syncInvoiceToFortnox } from "./integrations/fortnox/invoices";
 import { pullSupplierInvoicesFromFortnox, pullVouchersFromFortnox } from "./integrations/fortnox/accounting";
 import { createOrReuseStripeCustomer } from "./integrations/stripe/customers";
-import { createPaymentMethodSetupIntent } from "./integrations/stripe/subscriptions";
+import {
+  activateStripeSubscription,
+  cancelStripeSubscriptionAtPeriodEnd,
+  createPaymentMethodSetupIntent,
+  syncPriceToStripe,
+  syncProductToStripe
+} from "./integrations/stripe/subscriptions";
 import { constructStripeWebhookEvent, processStripeEvent } from "./integrations/stripe/webhooks";
 import { requireCloudflareAccess } from "./lib/security";
-import { sha256Hex } from "./lib/crypto";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -89,6 +101,12 @@ const customerSchema = z.object({
 
 app.get("/api/customers", async (c) => c.json(await all(c.env.DB, "SELECT * FROM customers ORDER BY created_at DESC")));
 
+app.get("/api/customers/:id", async (c) => {
+  const detail = await getCustomerDetail(c.env, c.req.param("id"));
+  if (!detail) return c.json({ error: "Customer not found" }, 404);
+  return c.json(detail);
+});
+
 app.post("/api/customers", zValidator("json", customerSchema), async (c) => {
   const data = c.req.valid("json");
   const customerId = id("cus");
@@ -139,6 +157,10 @@ app.post("/api/customers/:id/payment-method/setup", async (c) => {
   return c.json(await createPaymentMethodSetupIntent(c.env, c.req.param("id")));
 });
 
+app.get("/api/stripe/config", async (c) => {
+  return c.json({ publishableKey: c.env.STRIPE_PUBLISHABLE_KEY ?? "" });
+});
+
 const productSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().default(""),
@@ -180,6 +202,8 @@ app.post("/api/prices", zValidator("json", priceSchema), async (c) => {
 });
 
 app.post("/api/products/seed-test", async (c) => c.json(await seedTestProducts(c.env)));
+app.post("/api/products/:id/sync-stripe", async (c) => c.json(await syncProductToStripe(c.env, c.req.param("id"))));
+app.post("/api/prices/:id/sync-stripe", async (c) => c.json(await syncPriceToStripe(c.env, c.req.param("id"))));
 
 const subscriptionSchema = z.object({
   customer_id: z.string().min(1),
@@ -215,7 +239,17 @@ app.post("/api/subscriptions", zValidator("json", subscriptionSchema), async (c)
   return c.json(await createSubscription(c.env, c.req.valid("json")), 201);
 });
 
+app.post("/api/subscriptions/:id/activate", async (c) => {
+  return c.json(await activateStripeSubscription(c.env, c.req.param("id")));
+});
+
+app.post("/api/subscriptions/:id/cancel", async (c) => {
+  return c.json(await cancelStripeSubscriptionAtPeriodEnd(c.env, c.req.param("id")));
+});
+
 const rowSchema = z.object({
+  product_id: z.string().optional().nullable(),
+  price_id: z.string().optional().nullable(),
   description: z.string().min(1),
   quantity: z.number().positive(),
   unit: z.string().optional().default("st"),
@@ -241,32 +275,13 @@ app.get("/api/offers", async (c) => c.json(await all<any>(
 )));
 
 app.get("/api/offers/:id", async (c) => {
-  const offer = await one<any>(c.env.DB, "SELECT * FROM offers WHERE id=?", c.req.param("id"));
+  const offer = await getOfferDetail(c.env, c.req.param("id"));
   if (!offer) return c.json({ error: "Offer not found" }, 404);
-  const rows = await all<any>(c.env.DB, "SELECT * FROM offer_rows WHERE offer_id=? ORDER BY sort_order", offer.id);
-  return c.json({ ...offer, rows });
+  return c.json(offer);
 });
 
 app.post("/api/offers", zValidator("json", offerSchema), async (c) => {
-  const data = c.req.valid("json");
-  const offerId = id("off");
-  const totals = calculate(data.rows);
-  const statements = [
-    c.env.DB.prepare(
-      `INSERT INTO offers
-      (id,customer_id,title,offer_date,expire_date,remarks,subtotal,vat_total,total)
-      VALUES (?,?,?,?,?,?,?,?,?)`
-    ).bind(offerId, data.customer_id, data.title, data.offer_date, data.expire_date, data.remarks, totals.subtotal, totals.vatTotal, totals.total),
-    ...data.rows.map((row, index) =>
-      c.env.DB.prepare(
-        `INSERT INTO offer_rows
-        (id,offer_id,sort_order,article_number,description,quantity,unit,unit_price,discount_percent,vat_percent,account_number)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(id("orow"), offerId, index, row.article_number, row.description, row.quantity, row.unit, row.unit_price, row.discount_percent, row.vat_percent, row.account_number ?? null)
-    )
-  ];
-  await c.env.DB.batch(statements);
-  return c.json({ id: offerId, ...totals }, 201);
+  return c.json(await createBusinessOffer(c.env, c.req.valid("json")), 201);
 });
 
 app.post("/api/offers/:id/sync", async (c) => {
@@ -287,33 +302,27 @@ app.post("/api/offers/:id/sync", async (c) => {
 app.post("/api/offers/:id/sign-link", async (c) => {
   const offer = await one<any>(c.env.DB, "SELECT id FROM offers WHERE id=?", c.req.param("id"));
   if (!offer) return c.json({ error: "Offer not found" }, 404);
-  const token = crypto.randomUUID() + crypto.randomUUID();
-  const hash = await sha256Hex(token);
-  await c.env.DB.prepare("UPDATE offers SET signature_token_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(hash, offer.id).run();
-  return c.json({ url: `${c.env.APP_BASE_URL}/sign/${token}` });
+  return c.json(await createOfferAcceptanceToken(c.env, offer.id));
 });
 
 app.get("/sign/:token", async (c) => {
-  const hash = await sha256Hex(c.req.param("token"));
-  const offer = await one<any>(
-    c.env.DB,
-    `SELECT o.id,o.title,o.total,o.offer_date,o.expire_date,o.status,c.name customer_name
-     FROM offers o JOIN customers c ON c.id=o.customer_id WHERE o.signature_token_hash=?`,
-    hash
-  );
-  if (!offer) return c.text("Ogiltig eller utgången offertlänk.", 404);
-  const title = escapeHtml(offer.title || "Offert");
-  const customerName = escapeHtml(offer.customer_name);
-  const status = escapeHtml(offer.status);
-  const amount = escapeHtml(Number(offer.total).toLocaleString("sv-SE"));
+  const token = await getOfferForToken(c.env, c.req.param("token"));
+  if (!token) return c.text("Ogiltig eller utgången offertlänk.", 404);
+  const snapshot = token.snapshot;
+  const title = escapeHtml(snapshot.offer.title || "Offert");
+  const customerName = escapeHtml(snapshot.offer.customer_name);
+  const amount = escapeHtml((Number(snapshot.totals.total) / 100).toLocaleString("sv-SE"));
+  const rows = snapshot.rows.map((row: any) => `<tr><td>${escapeHtml(row.description)}</td><td>${escapeHtml(String(row.quantity))}</td><td>${escapeHtml((row.unit_price_minor / 100).toLocaleString("sv-SE"))} kr</td><td>${escapeHtml(row.billing_type)}</td></tr>`).join("");
   return c.html(`<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
   <title>Acceptera offert</title><style>body{font-family:system-ui;background:#f4f2ee;color:#171717;max-width:720px;margin:50px auto;padding:24px}
   .card{background:white;border:1px solid #ddd7cf;border-radius:18px;padding:32px}.amount{font-size:34px;font-weight:750}
+  table{width:100%;border-collapse:collapse;margin:20px 0}td,th{text-align:left;border-bottom:1px solid #e6e0d8;padding:9px}
   input{width:100%;box-sizing:border-box;padding:12px;margin:6px 0 14px;border:1px solid #bbb;border-radius:9px}
   button{padding:13px 20px;background:#171717;color:#fff;border:0;border-radius:9px;font-weight:650}</style></head><body>
   <div class="card"><small>WEBBLYFTET · TEST</small><h1>${title}</h1>
   <p>Kund: ${customerName}</p><p class="amount">${amount} kr</p>
-  <p>Status: ${status}</p>
+  <p>Version: ${escapeHtml(String(token.version_number))}</p>
+  <table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Typ</th></tr></thead><tbody>${rows}</tbody></table>
   <form method="post"><label>Namn</label><input name="name" required>
   <label>E-post</label><input type="email" name="email" required>
   <label><input type="checkbox" required style="width:auto"> Jag accepterar offerten och villkoren.</label><br><br>
@@ -322,48 +331,31 @@ app.get("/sign/:token", async (c) => {
 });
 
 app.post("/sign/:token", async (c) => {
-  const hash = await sha256Hex(c.req.param("token"));
-  const offer = await one<any>(c.env.DB, "SELECT id,status FROM offers WHERE signature_token_hash=?", hash);
-  if (!offer) return c.text("Ogiltig offertlänk.", 404);
-  if (offer.status === "ACCEPTED") return c.text("Offerten är redan accepterad.", 409);
   const form = await c.req.formData();
   const name = String(form.get("name") ?? "").trim();
   const email = String(form.get("email") ?? "").trim();
   if (!name || !email) return c.text("Namn och e-post krävs.", 400);
-  await c.env.DB.prepare(
-    `UPDATE offers SET status='ACCEPTED', accepted_at=CURRENT_TIMESTAMP, accepted_by_name=?, accepted_by_email=?,
-    acceptance_ip=?, acceptance_user_agent=?, signature_token_hash=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`
-  ).bind(name, email, c.req.header("cf-connecting-ip") ?? "", c.req.header("user-agent") ?? "", offer.id).run();
+  await acceptOfferToken(c.env, {
+    token: c.req.param("token"),
+    accepted_by_name: name,
+    accepted_by_email: email,
+    ip_address: c.req.header("cf-connecting-ip") ?? "",
+    user_agent: c.req.header("user-agent") ?? ""
+  });
   return c.html("<h1>Offerten är accepterad</h1><p>Tack. Händelsen har sparats i audit trail.</p>");
 });
 
 app.post("/api/offers/:id/create-invoice", async (c) => {
-  const offer = await one<any>(c.env.DB, "SELECT * FROM offers WHERE id=?", c.req.param("id"));
-  if (!offer) return c.json({ error: "Offer not found" }, 404);
-  if (!offer.fortnox_document_number) return c.json({ error: "Offer must be synced to Fortnox first." }, 409);
-
-  // Fortnox supports creating invoice directly from an offer when the relevant permission is enabled.
-  const result = await createInvoiceFromFortnoxOffer(c.env, offer.fortnox_document_number);
-
-  const invoice = result.Invoice ?? result;
-  const invoiceId = id("inv");
-  await c.env.DB.prepare(
-    `INSERT INTO invoices
-    (id,fortnox_document_number,customer_id,source_offer_id,status,invoice_date,due_date,total,balance,booked,sync_status,last_synced_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?, 'SYNCED',CURRENT_TIMESTAMP)`
-  ).bind(
-    invoiceId,
-    invoice.DocumentNumber ?? null,
-    offer.customer_id,
-    offer.id,
-    "CREATED",
-    invoice.InvoiceDate ?? new Date().toISOString().slice(0,10),
-    invoice.DueDate ?? null,
-    invoice.Total ?? offer.total,
-    invoice.Balance ?? invoice.Total ?? offer.total,
-    invoice.Booked ? 1 : 0
-  ).run();
-  return c.json({ invoiceId, fortnox: result });
+  const invoice = await one<any>(
+    c.env.DB,
+    `SELECT i.* FROM invoices i
+     JOIN sales_orders so ON so.id=i.sales_order_id
+     WHERE so.offer_id=?
+     ORDER BY i.created_at DESC LIMIT 1`,
+    c.req.param("id")
+  );
+  if (!invoice) return c.json({ error: "Offer must be accepted before an internal invoice exists." }, 409);
+  return c.json({ invoice });
 });
 
 app.get("/api/invoices", async (c) => c.json(await all<any>(
@@ -398,6 +390,10 @@ app.post("/api/invoices/pull", async (c) => {
     }
   }
   return c.json({ imported: invoices.length });
+});
+
+app.post("/api/invoices/:id/sync-fortnox", async (c) => {
+  return c.json(await syncInvoiceToFortnox(c.env, c.req.param("id")));
 });
 
 app.post("/api/receipts", async (c) => {

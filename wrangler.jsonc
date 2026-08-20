@@ -36,6 +36,7 @@
   "vars": {
     "APP_ENV": "local",
     "APP_BASE_URL": "http://localhost:8787",
+    "STRIPE_PUBLISHABLE_KEY": "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
     "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
   },
   "observability": {
@@ -71,6 +72,7 @@
       "vars": {
         "APP_ENV": "test",
         "APP_BASE_URL": "https://DIN-TESTDOMAN",
+        "STRIPE_PUBLISHABLE_KEY": "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
     },
@@ -102,6 +104,7 @@
       "vars": {
         "APP_ENV": "production",
         "APP_BASE_URL": "https://DIN-PRODUKTIONSDOMAN",
+        "STRIPE_PUBLISHABLE_KEY": "pk_live_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
     }

@@ -78,6 +78,120 @@ export async function createPaymentMethodSetupIntent(env: Env, customerId: strin
   }
 }
 
+export async function syncProductToStripe(env: Env, productId: string) {
+  const product = await one<any>(env.DB, "SELECT * FROM products WHERE id=?", productId);
+  if (!product) throw new PublicAppError(404, "Produkten hittades inte.");
+  if (product.stripe_product_id) return { stripe_product_id: product.stripe_product_id, reused: true };
+  const stripe = stripeClient(env);
+  const result = await stripe.products.create({
+    name: product.name,
+    description: product.description || undefined,
+    active: product.active === 1,
+    metadata: {
+      webblyftet_product_id: product.id
+    }
+  }, {
+    idempotencyKey: `product:${product.id}`
+  });
+  await env.DB.prepare("UPDATE products SET stripe_product_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .bind(result.id, product.id)
+    .run();
+  return { stripe_product_id: result.id, reused: false };
+}
+
+export async function syncPriceToStripe(env: Env, priceId: string) {
+  const price = await one<any>(
+    env.DB,
+    `SELECT pr.*, p.name product_name, p.stripe_product_id
+     FROM prices pr JOIN products p ON p.id=pr.product_id
+     WHERE pr.id=?`,
+    priceId
+  );
+  if (!price) throw new PublicAppError(404, "Priset hittades inte.");
+  if (price.stripe_price_id) return { stripe_price_id: price.stripe_price_id, reused: true };
+  const productSync = price.stripe_product_id ? { stripe_product_id: price.stripe_product_id } : await syncProductToStripe(env, price.product_id);
+  const stripe = stripeClient(env);
+  const result = await stripe.prices.create({
+    product: productSync.stripe_product_id,
+    unit_amount: price.amount,
+    currency: String(price.currency).toLowerCase(),
+    recurring: price.billing_type === "RECURRING" ? {
+      interval: price.billing_interval === "YEAR" ? "year" : "month"
+    } : undefined,
+    metadata: {
+      webblyftet_price_id: price.id,
+      webblyftet_product_id: price.product_id
+    }
+  }, {
+    idempotencyKey: `price:${price.id}:${price.amount}:${price.currency}:${price.billing_interval ?? "one_time"}`
+  });
+  await env.DB.prepare("UPDATE prices SET stripe_price_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .bind(result.id, price.id)
+    .run();
+  return { stripe_price_id: result.id, reused: false };
+}
+
+export async function activateStripeSubscription(env: Env, subscriptionId: string) {
+  const subscription = await one<any>(env.DB, "SELECT * FROM subscriptions WHERE id=?", subscriptionId);
+  if (!subscription) throw new PublicAppError(404, "Abonnemanget hittades inte.");
+  if (subscription.stripe_subscription_id) return { stripe_subscription_id: subscription.stripe_subscription_id, reused: true };
+  if (!["PENDING", "DRAFT"].includes(subscription.status)) throw new PublicAppError(409, "Abonnemanget kan inte aktiveras i nuvarande status.");
+  const customer = await one<any>(env.DB, "SELECT * FROM customers WHERE id=?", subscription.customer_id);
+  if (!customer?.stripe_customer_id) throw new PublicAppError(409, "Kunden saknar Stripe Customer.");
+  const paymentMethod = await one<any>(
+    env.DB,
+    "SELECT * FROM payment_methods WHERE customer_id=? AND provider='STRIPE' AND status='ACTIVE' ORDER BY is_default DESC, updated_at DESC LIMIT 1",
+    customer.id
+  );
+  if (!paymentMethod) throw new PublicAppError(409, "Kunden saknar giltig betalmetod.");
+  const items = await env.DB.prepare(
+    `SELECT si.*, pr.billing_type, pr.stripe_price_id
+     FROM subscription_items si JOIN prices pr ON pr.id=si.price_id
+     WHERE si.subscription_id=?`
+  ).bind(subscription.id).all<any>();
+  if (!items.results.length) throw new PublicAppError(409, "Abonnemanget saknar rader.");
+  const stripeItems = [];
+  for (const item of items.results) {
+    if (item.billing_type !== "RECURRING") throw new PublicAppError(409, "Endast återkommande priser får aktiveras.");
+    const synced = item.stripe_price_id ? { stripe_price_id: item.stripe_price_id } : await syncPriceToStripe(env, item.price_id);
+    stripeItems.push({ price: synced.stripe_price_id, quantity: item.quantity });
+  }
+  const stripe = stripeClient(env);
+  const result = await stripe.subscriptions.create({
+    customer: customer.stripe_customer_id,
+    items: stripeItems,
+    default_payment_method: paymentMethod.provider_payment_method_id,
+    payment_behavior: "default_incomplete",
+    metadata: {
+      webblyftet_subscription_id: subscription.id,
+      webblyftet_customer_id: customer.id,
+      sales_order_id: subscription.sales_order_id ?? ""
+    }
+  }, {
+    idempotencyKey: `subscription:${subscription.id}`
+  });
+  await env.DB.prepare(
+    "UPDATE subscriptions SET stripe_customer_id=?, stripe_subscription_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(customer.stripe_customer_id, result.id, subscription.id).run();
+  return { stripe_subscription_id: result.id, reused: false, status: result.status };
+}
+
+export async function cancelStripeSubscriptionAtPeriodEnd(env: Env, subscriptionId: string) {
+  const subscription = await one<any>(env.DB, "SELECT * FROM subscriptions WHERE id=?", subscriptionId);
+  if (!subscription) throw new PublicAppError(404, "Abonnemanget hittades inte.");
+  if (!subscription.stripe_subscription_id) throw new PublicAppError(409, "Abonnemanget saknar Stripe Subscription.");
+  const stripe = stripeClient(env);
+  const result = await stripe.subscriptions.update(subscription.stripe_subscription_id, {
+    cancel_at_period_end: true
+  }, {
+    idempotencyKey: `subscription-cancel-at-period-end:${subscription.id}`
+  });
+  await env.DB.prepare("UPDATE subscriptions SET cancel_at_period_end=1, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .bind(subscription.id)
+    .run();
+  return { stripe_subscription_id: result.id, cancel_at_period_end: result.cancel_at_period_end };
+}
+
 function setupIntentStatus(status: string): string {
   switch (status) {
     case "requires_payment_method":

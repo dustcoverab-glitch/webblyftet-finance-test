@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Link, NavLink, Route, Routes, useParams } from "react-router-dom";
 import {
   BadgeCheck, BookOpen, Building2, FileCheck2, FileText, Gauge, PlugZap,
   Package, ReceiptText, RefreshCw, Repeat, Send, Users, WalletCards
@@ -25,7 +25,7 @@ type Product = {
 };
 type Subscription = {
   id: string; customer_name: string; status: string; monthly_amount: number; current_period_end?: string;
-  stripe_subscription_id?: string; items: string | any[];
+  customer_id?: string; stripe_subscription_id?: string; cancel_at_period_end?: number; items: string | any[];
 };
 
 function money(value: number | null | undefined) {
@@ -132,8 +132,32 @@ function Customers() {
     <Card><table><thead><tr><th>Kund</th><th>Kontakt</th><th>Ort</th><th>Fortnox</th><th></th></tr></thead><tbody>
       {rows.map(r=><tr key={r.id}><td><strong>{r.name}</strong><small>{r.org_number}</small></td>
         <td>{r.phone}<small>{r.email}</small></td><td>{r.city}</td><td><Status value={r.sync_status}/><small>{r.fortnox_customer_number}</small></td>
-        <td>{!r.fortnox_customer_number && <button className="small" onClick={async()=>{await post(`/api/customers/${r.id}/sync`); await load();}}>Synka</button>}</td></tr>)}
+        <td><div className="rowActions"><Link className="button small ghost" to={`/customers/${r.id}`}>Visa</Link>{!r.fortnox_customer_number && <button className="small" onClick={async()=>{await post(`/api/customers/${r.id}/sync`); await load();}}>Synka</button>}</div></td></tr>)}
     </tbody></table></Card>
+  </>;
+}
+
+function CustomerDetail() {
+  const { id } = useParams();
+  const [data, setData] = useState<any>(null);
+  const load = () => api<any>(`/api/customers/${id}`).then(setData);
+  useEffect(() => { load().catch(console.error); }, [id]);
+  if (!data) return <div>Hämtar…</div>;
+  const c = data.customer;
+  return <>
+    <PageHead title={c.name} subtitle="Kunddetalj med offerter, order, fakturor, abonnemang och audit."
+      action={<div className="actions"><Link className="button ghost" to={`/payment-method/${c.id}`}>Kortregistrering</Link><button onClick={async()=>{await post(`/api/customers/${c.id}/stripe-customer`); await load();}}>Skapa Stripe Customer</button></div>} />
+    <div className="metricGrid">
+      <Card><span>Offerter</span><strong>{data.offers.length}</strong></Card>
+      <Card><span>Order</span><strong>{data.orders.length}</strong></Card>
+      <Card><span>Fakturor</span><strong>{data.invoices.length}</strong></Card>
+      <Card><span>Betalmetoder</span><strong>{data.payment_methods.length}</strong></Card>
+    </div>
+    <div className="twoCol">
+      <Card><h3>Abonnemang</h3><table><tbody>{data.subscriptions.map((s:any)=><tr key={s.id}><td>{s.id}<small>{s.stripe_subscription_id || "Ej Stripe-aktiverad"}</small></td><td><Status value={s.status}/></td><td><button className="small" onClick={async()=>{await post(`/api/subscriptions/${s.id}/activate`); await load();}}>Aktivera</button></td></tr>)}</tbody></table></Card>
+      <Card><h3>Audit</h3><div className="logList">{data.audit.map((a:any)=><div key={a.id}><span>{a.action}</span><small>{a.created_at}</small></div>)}</div></Card>
+    </div>
+    <Card><h3>Fakturor</h3><table><tbody>{data.invoices.map((inv:any)=><tr key={inv.id}><td>{inv.invoice_number || inv.fortnox_document_number || inv.id}</td><td>{money(inv.total)}</td><td><Status value={inv.status}/></td><td>{!inv.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/invoices/${inv.id}/sync-fortnox`); await load();}}>Sync Fortnox</button>}</td></tr>)}</tbody></table></Card>
   </>;
 }
 
@@ -168,11 +192,31 @@ function Offers() {
       {rows.map(r=><tr key={r.id}><td><strong>{r.title || "Offert"}</strong><small>{r.offer_date}</small></td><td>{r.customer_name}</td>
       <td>{money(r.total)}</td><td><Status value={r.status}/></td><td>{r.fortnox_document_number || "—"}</td>
       <td><div className="rowActions">
+        <Link className="button small ghost" to={`/offers/${r.id}`}>Visa</Link>
         {!r.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/offers/${r.id}/sync`); await load();}}>Synka</button>}
         <button className="small ghost" onClick={async()=>{const d:any=await post(`/api/offers/${r.id}/sign-link`); await navigator.clipboard.writeText(d.url); alert("Signeringslänk kopierad");}}>Signeringslänk</button>
         {r.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/offers/${r.id}/create-invoice`); alert("Faktura skapad");}}>→ Faktura</button>}
       </div></td></tr>)}
     </tbody></table></Card>
+  </>;
+}
+
+function OfferDetail() {
+  const { id } = useParams();
+  const [offer, setOffer] = useState<any>(null);
+  const load = () => api<any>(`/api/offers/${id}`).then(setOffer);
+  useEffect(() => { load().catch(console.error); }, [id]);
+  if (!offer) return <div>Hämtar…</div>;
+  return <>
+    <PageHead title={offer.title || "Offert"} subtitle={`${offer.customer_name} · ${offer.status}`}
+      action={<button onClick={async()=>{const d:any=await post(`/api/offers/${offer.id}/sign-link`); await navigator.clipboard.writeText(d.url); await load(); alert("Signeringslänk kopierad");}}>Skapa acceptlänk</button>} />
+    <Card><table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Typ</th></tr></thead><tbody>{offer.rows.map((r:any)=>
+      <tr key={r.id}><td>{r.description}<small>{r.product_id || ""}</small></td><td>{r.quantity}</td><td>{money(r.unit_price)}</td><td>{r.billing_type}{r.billing_interval ? ` / ${r.billing_interval}` : ""}</td></tr>)}</tbody></table></Card>
+    <div className="twoCol">
+      <Card><h3>Versioner</h3><div className="logList">{offer.versions.map((v:any)=><div key={v.id}><span>Version {v.version_number}</span><strong>{cents(v.total)}</strong></div>)}</div></Card>
+      <Card><h3>Order</h3><div className="logList">{offer.orders.map((o:any)=><div key={o.id}><span>{o.id}</span><Status value={o.status}/></div>)}</div></Card>
+    </div>
+    <Card><h3>Audit</h3><div className="logList">{offer.audit.map((a:any)=><div key={a.id}><span>{a.action}</span><small>{a.created_at}</small></div>)}</div></Card>
   </>;
 }
 
@@ -283,11 +327,12 @@ function Products() {
       <select name="billing_interval"><option value="MONTH">MONTH</option><option value="YEAR">YEAR</option></select>
       <input name="vat_percent" type="number" defaultValue="25"/><button type="submit">Spara</button>
     </form></Card>}
-    <Card><table><thead><tr><th>Produkt</th><th>Typ</th><th>Pris</th><th>Stripe</th><th>Status</th></tr></thead><tbody>
+    <Card><table><thead><tr><th>Produkt</th><th>Typ</th><th>Pris</th><th>Stripe</th><th>Status</th><th></th></tr></thead><tbody>
       {rows.map((r) => <tr key={r.id}><td><strong>{r.name}</strong><small>{r.description}</small></td><td>{r.product_type}</td>
         <td>{jsonArray(r.prices).map((p:any) => <div key={p.id}>{cents(p.amount)} <small>{p.billing_type}{p.billing_interval ? ` / ${p.billing_interval}` : ""}</small></div>)}</td>
         <td>{jsonArray(r.prices).map((p:any) => <small key={p.id}>{p.stripe_price_id || "Ej kopplad"}</small>)}</td>
-        <td><Status value={r.active ? "ACTIVE" : "INACTIVE"}/></td></tr>)}
+        <td><Status value={r.active ? "ACTIVE" : "INACTIVE"}/></td>
+        <td><div className="rowActions"><button className="small ghost" onClick={async()=>{await post(`/api/products/${r.id}/sync-stripe`); await load();}}>Stripe produkt</button>{jsonArray(r.prices).map((p:any)=><button className="small" key={p.id} onClick={async()=>{await post(`/api/prices/${p.id}/sync-stripe`); await load();}}>Pris</button>)}</div></td></tr>)}
     </tbody></table></Card>
   </>;
 }
@@ -301,8 +346,51 @@ function Subscriptions() {
     <Card><table><thead><tr><th>Kund</th><th>Status</th><th>Produkter/items</th><th>Månadsbelopp</th><th>Nästa periodslut</th><th>Stripe-status</th></tr></thead><tbody>
       {rows.map((r) => <tr key={r.id}><td>{r.customer_name}</td><td><Status value={r.status}/></td>
         <td>{jsonArray(r.items).map((item:any, index:number) => <div key={index}>{item.product_name} × {item.quantity}<small>{cents(item.unit_amount)} {item.billing_interval || ""}</small></div>)}</td>
-        <td>{cents(r.monthly_amount)}</td><td>{r.current_period_end || "—"}</td><td>{r.stripe_subscription_id ? "Kopplad" : "Ej skapad"}</td></tr>)}
+        <td>{cents(r.monthly_amount)}</td><td>{r.current_period_end || "—"}</td><td>{r.stripe_subscription_id ? "Kopplad" : "Ej skapad"}</td>
+        <td><div className="rowActions">{r.customer_id && <Link className="button small ghost" to={`/payment-method/${r.customer_id}`}>Kort</Link>}
+          <button className="small" onClick={async()=>{await post(`/api/subscriptions/${r.id}/activate`); await load();}}>Aktivera</button>
+          {r.stripe_subscription_id && !r.cancel_at_period_end && <button className="small ghost" onClick={async()=>{await post(`/api/subscriptions/${r.id}/cancel`); await load();}}>Avsluta periodslut</button>}</div></td></tr>)}
     </tbody></table></Card>
+  </>;
+}
+
+function PaymentMethodPage() {
+  const { customerId } = useParams();
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    let card: any;
+    let stripe: any;
+    async function mount() {
+      const config = await api<{ publishableKey: string }>("/api/stripe/config");
+      const session = await post<any>(`/api/customers/${customerId}/payment-method/setup`);
+      if (!document.querySelector('script[src="https://js.stripe.com/v3/"]')) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://js.stripe.com/v3/";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Stripe.js kunde inte laddas."));
+          document.head.appendChild(script);
+        });
+      }
+      stripe = (window as any).Stripe(config.publishableKey);
+      const elements = stripe.elements();
+      card = elements.create("card");
+      card.mount("#card-element");
+      const form = document.getElementById("card-form");
+      form?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        setMessage("Bekräftar kort…");
+        const result = await stripe.confirmCardSetup(session.client_secret, { payment_method: { card } });
+        if (result.error) setMessage(result.error.message);
+        else setMessage(`SetupIntent ${result.setupIntent.status}. Webhooken uppdaterar lokal betalmetod.`);
+      });
+    }
+    mount().catch((error) => setMessage(error.message));
+    return () => { card?.unmount?.(); };
+  }, [customerId]);
+  return <>
+    <PageHead title="Kortregistrering" subtitle="Stripe.js Elements körs i browsern; kortdata skickas aldrig genom Workern."/>
+    <Card><form id="card-form" className="paymentForm"><div id="card-element"></div><button type="submit">Spara kort</button><p className="muted">{message}</p></form></Card>
   </>;
 }
 
@@ -327,8 +415,10 @@ function Integration(){
 
 function App(){
   return <Layout><Routes>
-    <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/offers" element={<Offers/>}/>
+    <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/customers/:id" element={<CustomerDetail/>}/><Route path="/offers" element={<Offers/>}/>
+    <Route path="/offers/:id" element={<OfferDetail/>}/>
     <Route path="/products" element={<Products/>}/><Route path="/subscriptions" element={<Subscriptions/>}/>
+    <Route path="/payment-method/:customerId" element={<PaymentMethodPage/>}/>
     <Route path="/invoices" element={<Invoices/>}/><Route path="/receipts" element={<Receipts/>}/>
     <Route path="/supplier-invoices" element={<SupplierInvoices/>}/><Route path="/bookkeeping" element={<Bookkeeping/>}/>
     <Route path="/integration" element={<Integration/>}/>

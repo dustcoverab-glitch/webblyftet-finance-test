@@ -19,13 +19,14 @@ Integrationskod ligger under:
 - R2 för kvitton/underlag
 - Fortnox OAuth2 Authorization Code Flow med service account
 - Fortnox client credentials-tokenflöde efter hämtad `tenantId`
-- Stripe foundation med Customer, SetupIntent och signerade webhooks
+- Stripe foundation med Customer, Product, Price, SetupIntent, Subscription och signerade webhooks
 - Krypterad tokenlagring med AES-GCM
 - Products, prices, subscriptions, payments, accounting events och audit log i Finance Core
 - Kundregister + push/pull mot Fortnox
 - Offertskapande + synk till Fortnox
-- Offertacceptans med tokenbaserad audit trail
-- Offert till faktura via Fortnox
+- Offertacceptans med immutable offer version, hashad one-time-token och audit trail
+- Accepterad offert till sales order, intern testfaktura och pending subscription
+- Intern faktura till Fortnox-faktura via adapter
 - Fakturasynk och betalstatus
 - Kvitto-/underlagsuppladdning till Fortnox Inbox
 - Leverantörsfakturor från Fortnox
@@ -186,8 +187,14 @@ Stripe SDK körs i Workers med `Stripe.createFetchHttpClient()`. Webhook-verifie
 
 Implementerat nu:
 
+- `GET /api/customers/:id`
 - `POST /api/customers/:id/stripe-customer`
 - `POST /api/customers/:id/payment-method/setup`
+- `GET /api/stripe/config`
+- `POST /api/products/:id/sync-stripe`
+- `POST /api/prices/:id/sync-stripe`
+- `POST /api/subscriptions/:id/activate`
+- `POST /api/subscriptions/:id/cancel`
 - `POST /webhooks/stripe`
 
 SetupIntent används som backendgrund för att senare kunna registrera företagskort. Backend skapar en lokal `payment_method_setup_sessions`-rad och använder dess id som Stripe idempotency key. Retries för samma aktiva session återanvänder sparat Stripe SetupIntent ID, hämtar aktuell `client_secret` från Stripe och skapar inte parallella SetupIntents. `client_secret` sparas inte permanent i D1 och får aldrig loggas. Frontend får bara `client_secret` för Stripe-klientflödet. Råa kortnummer får aldrig passera Worker eller D1.
@@ -202,7 +209,7 @@ Förberedda webhook event-typer:
 - `payment_intent.succeeded`
 - `payment_intent.payment_failed`
 
-Stripe Checkout/Elements-flödet är inte skarpt implementerat ännu.
+Frontendens `/payment-method/:customerId` använder Stripe.js Elements och `confirmCardSetup`. Det är endast ett testflöde för Stripe testmode. Råa kortnummer skickas direkt till Stripe från browsern och passerar inte Worker, D1, audit-log, integration-events eller sync-log.
 
 Stripe webhooks lagras i `integration_events` med statusflödet `RECEIVED -> PROCESSING -> PROCESSED` eller `FAILED`. `PROCESSED` och pågående `PROCESSING` behandlas som dubbletter, medan `FAILED` och kvarlämnad `RECEIVED` får köras om. Webhookar för `customer.subscription.created|updated|deleted` uppdaterar bara befintliga lokala subscriptions via `stripe_subscription_id` eller metadata `webblyftet_subscription_id`; okända Stripe subscriptions skapar inte lokal core-data.
 
@@ -215,6 +222,26 @@ Subscription-rader valideras alltid mot aktiva products/prices innan några DB-s
 Betalningar accepterar bara explicita statusövergångar: `PENDING -> PROCESSING|FAILED`, `PROCESSING -> SUCCEEDED|FAILED`, `FAILED -> PROCESSING`, `SUCCEEDED -> PARTIALLY_REFUNDED|REFUNDED` och `PARTIALLY_REFUNDED -> REFUNDED`. Sena webhookar får därför inte skriva om `SUCCEEDED` till `FAILED`.
 
 Accounting events som skapas från Stripe-betalningar markerar `payload_json.accounting_semantics = "SETTLEMENT"`, eftersom `net_amount=gross` och `vat_amount=0` beskriver betalningsavräkning och inte framtida försäljningsmoms.
+
+## Offer Acceptance och Sales Orders
+
+När en offert skickas för acceptans skapas en immutable rad i `offer_versions` med totals och rad-snapshot. Acceptlänken pekar på en specifik version via `offer_acceptance_tokens`, där endast hash av token sparas i D1. Tokens är one-time, har expiry och äldre oanvända länkar invalidieras när ny länk skapas.
+
+När kunden accepterar:
+
+1. `offer_acceptances` sparar exakt version, kund, signerande namn/e-post, IP, user-agent och `snapshot_hash`.
+2. `sales_orders` och `sales_order_items` skapas idempotent från acceptansen.
+3. `ONE_TIME`-rader skapar en intern testfaktura med `TEST-xxxxx`-nummer och minor-unit totals.
+4. `RECURRING`-rader skapar en lokal subscription i `PENDING`.
+5. `INVOICE_CREATED` accounting event skapas exakt en gång med `accounting_semantics = "SALE"`.
+
+Fortnox-faktura skapas från den interna fakturan via `POST /api/invoices/:id/sync-fortnox`; Fortnox document number sparas tillbaka på invoice-raden. Stripe recurring-flödet skapas separat via `POST /api/subscriptions/:id/activate`.
+
+## Stripe Subscriptions
+
+Produkter och priser synkas från Finance Core till Stripe med lokala idempotency keys och metadata (`webblyftet_product_id`, `webblyftet_price_id`). Subscriptions aktiveras bara om lokal subscription finns, kunden har Stripe Customer och en aktiv lokal Stripe-betalmetod finns.
+
+`invoice.paid` är canonical signal för lyckad återkommande debitering. Webhooken skapar/uppdaterar lokal payment, verifierar att lokal `payment.status === "SUCCEEDED"` och skapar sedan `SUBSCRIPTION_PAYMENT_RECEIVED` exakt en gång. `invoice.payment_failed` markerar subscription som `PAST_DUE` och skapar failed payment attempt utan känslig kortdata. Ett senare `invoice.paid` för samma Stripe-invoice får lyfta lokal payment från `FAILED -> PROCESSING -> SUCCEEDED`; sena failed-event får inte backa en lyckad payment.
 
 Lokala testprodukter kan seedas från UI:t `Produkter & priser` eller via:
 
@@ -250,15 +277,19 @@ npm run deploy:production
 5. Hämta kunder
 6. Skapa testkund
 7. Synka kund
-8. Skapa offert
-9. Synka offert
-10. Skapa signeringslänk
-11. Acceptera offerten
-12. Skapa faktura från offerten
-13. Hämta fakturor och verifiera status
-14. Ladda upp kvitto
-15. Hämta leverantörsfakturor
-16. Hämta verifikationer
+8. Skapa testprodukter/priser och synka relevanta recurring prices till Stripe
+9. Skapa offert med minst en engångsrad och en återkommande rad
+10. Synka offert till Fortnox om Fortnox-offert ska jämföras
+11. Skapa signeringslänk
+12. Acceptera offerten via `/sign/:token`
+13. Verifiera att sales order, intern invoice och pending subscription skapas
+14. Synka intern invoice till Fortnox med `POST /api/invoices/:id/sync-fortnox`
+15. Skapa Stripe Customer och registrera testkort via `/payment-method/:customerId`
+16. Aktivera subscription och verifiera Stripe testmode-webhooks
+17. Hämta fakturor och verifiera status
+18. Ladda upp kvitto
+19. Hämta leverantörsfakturor
+20. Hämta verifikationer
 
 Rör inte riktiga Fortnox-data i den här testmiljön.
 

@@ -14,6 +14,7 @@ export const handledStripeEvents = [
   "customer.subscription.created",
   "customer.subscription.updated",
   "customer.subscription.deleted",
+  "setup_intent.succeeded",
   "invoice.paid",
   "invoice.payment_failed",
   "payment_intent.succeeded",
