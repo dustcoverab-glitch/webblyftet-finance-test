@@ -50,7 +50,7 @@
         {
           "binding": "DB",
           "database_name": "webblyftet-finance-test",
-          "database_id": "REPLACE_WITH_TEST_D1_DATABASE_ID",
+          "database_id": "d5af899a-0b40-4c43-b25c-02e128d83104",
           "migrations_dir": "migrations"
         }
       ],
