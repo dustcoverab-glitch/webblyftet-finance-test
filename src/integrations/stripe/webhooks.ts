@@ -10,13 +10,17 @@ export async function constructStripeWebhookEvent(env: Env, rawBody: string, sig
   const webhookSecret = stripeWebhookSecret(env);
   if (!signature) throw new PublicAppError(400, "Stripe-signatur saknas.");
   const stripe = stripeClient(env);
-  return stripe.webhooks.constructEventAsync(
-    rawBody,
-    signature,
-    webhookSecret,
-    undefined,
-    stripeWebhookCryptoProvider()
-  );
+  try {
+    return await stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      webhookSecret,
+      undefined,
+      stripeWebhookCryptoProvider()
+    );
+  } catch {
+    throw new PublicAppError(400, "Stripe-signaturen är ogiltig.");
+  }
 }
 
 export async function recordIntegrationEvent(env: Env, event: Stripe.Event) {

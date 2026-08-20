@@ -66,7 +66,7 @@
       "vars": {
         "APP_ENV": "test",
         "APP_BASE_URL": "https://webblyftet-finance-test.webblyftet-finance-test.workers.dev",
-        "STRIPE_PUBLISHABLE_KEY": "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
+        "STRIPE_PUBLISHABLE_KEY": "pk_test_51U6ZmLL9e4dgLD86WH5KUyN7HFU9M5TaCrSTI8yptqPMr7HRNTO3zqStWovaoBcqzSzB6TaRGqpRWLMzcTPcHv8V00tQMP6XKm",
         "REQUIRE_CLOUDFLARE_ACCESS": "false",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
