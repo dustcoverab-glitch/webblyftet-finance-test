@@ -523,10 +523,83 @@ export async function getSalesOrder(env: Env, orderId: string) {
   return { ...order, items: items.results, invoices: invoices.results, subscriptions: subscriptions.results };
 }
 
+export async function getInvoiceDetail(env: Env, invoiceId: string) {
+  const invoice = await one<any>(
+    env.DB,
+    `SELECT i.*, c.name customer_name, c.email customer_email, c.org_number customer_org_number,
+      c.phone customer_phone, c.city customer_city, o.title source_offer_title
+     FROM invoices i
+     JOIN customers c ON c.id=i.customer_id
+     LEFT JOIN offers o ON o.id=i.source_offer_id
+     WHERE i.id=?`,
+    invoiceId
+  );
+  if (!invoice) return null;
+  const [rows, salesOrder, sourceOffer, accountingEvents, payments, auditRows] = await Promise.all([
+    env.DB.prepare("SELECT * FROM invoice_rows WHERE invoice_id=? ORDER BY sort_order").bind(invoiceId).all<any>(),
+    invoice.sales_order_id
+      ? one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", invoice.sales_order_id)
+      : Promise.resolve(null),
+    invoice.source_offer_id
+      ? one<any>(env.DB, "SELECT id,title,status,total,offer_date,expire_date FROM offers WHERE id=?", invoice.source_offer_id)
+      : Promise.resolve(null),
+    env.DB.prepare("SELECT * FROM accounting_events WHERE entity_type='invoice' AND entity_id=? ORDER BY occurred_at DESC, created_at DESC").bind(invoiceId).all<any>(),
+    env.DB.prepare("SELECT * FROM payments WHERE invoice_id=? ORDER BY created_at DESC").bind(invoiceId).all<any>(),
+    env.DB.prepare("SELECT * FROM audit_log WHERE entity_type='invoice' AND entity_id=? ORDER BY created_at DESC LIMIT 50").bind(invoiceId).all<any>()
+  ]);
+  return {
+    ...invoice,
+    rows: rows.results,
+    sales_order: salesOrder,
+    source_offer: sourceOffer,
+    accounting_events: accountingEvents.results,
+    payments: payments.results,
+    audit: auditRows.results
+  };
+}
+
+export async function getSubscriptionDetail(env: Env, subscriptionId: string) {
+  const subscription = await one<any>(
+    env.DB,
+    `SELECT s.*, c.name customer_name, c.email customer_email, c.org_number customer_org_number,
+      o.title source_offer_title
+     FROM subscriptions s
+     JOIN customers c ON c.id=s.customer_id
+     LEFT JOIN offers o ON o.id=s.offer_id
+     WHERE s.id=?`,
+    subscriptionId
+  );
+  if (!subscription) return null;
+  const [items, payments, accountingEvents, auditRows, salesOrder] = await Promise.all([
+    env.DB.prepare(
+      `SELECT si.*, p.name product_name, pr.billing_type, pr.billing_interval, pr.vat_percent
+       FROM subscription_items si
+       LEFT JOIN products p ON p.id=si.product_id
+       LEFT JOIN prices pr ON pr.id=si.price_id
+       WHERE si.subscription_id=?
+       ORDER BY si.created_at`
+    ).bind(subscriptionId).all<any>(),
+    env.DB.prepare("SELECT * FROM payments WHERE subscription_id=? ORDER BY created_at DESC").bind(subscriptionId).all<any>(),
+    env.DB.prepare("SELECT * FROM accounting_events WHERE entity_type='payment' AND entity_id IN (SELECT id FROM payments WHERE subscription_id=?) ORDER BY occurred_at DESC, created_at DESC").bind(subscriptionId).all<any>(),
+    env.DB.prepare("SELECT * FROM audit_log WHERE entity_type='subscription' AND entity_id=? ORDER BY created_at DESC LIMIT 50").bind(subscriptionId).all<any>(),
+    subscription.sales_order_id
+      ? one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", subscription.sales_order_id)
+      : Promise.resolve(null)
+  ]);
+  return {
+    ...subscription,
+    items: items.results,
+    payments: payments.results,
+    accounting_events: accountingEvents.results,
+    audit: auditRows.results,
+    sales_order: salesOrder
+  };
+}
+
 export async function getCustomerDetail(env: Env, customerId: string) {
   const customer = await one<any>(env.DB, "SELECT * FROM customers WHERE id=?", customerId);
   if (!customer) return null;
-  const [offers, orders, invoices, subscriptions, paymentMethods, payments, auditRows] = await Promise.all([
+  const [offers, orders, invoices, subscriptions, paymentMethods, payments, auditRows, revenue, mrr, outstanding] = await Promise.all([
     env.DB.prepare("SELECT * FROM offers WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM sales_orders WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM invoices WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
@@ -545,8 +618,47 @@ export async function getCustomerDetail(env: Env, customerId: string) {
           OR entity_id IN (SELECT id FROM payment_methods WHERE customer_id=?)
        ORDER BY created_at DESC LIMIT 100`
     ).bind(customerId, customerId, customerId, customerId, customerId, customerId, customerId, customerId).all<any>()
+    ,
+    one<{ one_time_sold_minor: number }>(
+      env.DB,
+      "SELECT COALESCE(SUM(one_time_total_minor),0) one_time_sold_minor FROM sales_orders WHERE customer_id=?",
+      customerId
+    ),
+    one<{ active_subscription_count: number; active_mrr_minor: number }>(
+      env.DB,
+      `SELECT COUNT(DISTINCT s.id) active_subscription_count,
+        COALESCE(SUM(CASE WHEN pr.billing_interval='YEAR' THEN ROUND(si.unit_amount * si.quantity / 12.0) ELSE si.unit_amount * si.quantity END),0) active_mrr_minor
+       FROM subscriptions s
+       LEFT JOIN subscription_items si ON si.subscription_id=s.id
+       LEFT JOIN prices pr ON pr.id=si.price_id
+       WHERE s.customer_id=? AND s.status='ACTIVE'`,
+      customerId
+    ),
+    one<{ outstanding_minor: number }>(
+      env.DB,
+      `SELECT COALESCE(SUM(COALESCE(balance_minor, ROUND(COALESCE(balance,total) * 100))),0) outstanding_minor
+       FROM invoices
+       WHERE customer_id=? AND cancelled=0 AND status NOT IN ('PAID','CREDITED','CANCELLED')`,
+      customerId
+    )
   ]);
-  return { customer, offers: offers.results, orders: orders.results, invoices: invoices.results, subscriptions: subscriptions.results, payment_methods: paymentMethods.results, payments: payments.results, audit: auditRows.results };
+  return {
+    customer,
+    metrics: {
+      one_time_sold_minor: revenue?.one_time_sold_minor ?? 0,
+      active_mrr_minor: mrr?.active_mrr_minor ?? 0,
+      active_subscription_count: mrr?.active_subscription_count ?? 0,
+      outstanding_minor: outstanding?.outstanding_minor ?? 0,
+      latest_payment: payments.results[0] ?? null
+    },
+    offers: offers.results,
+    orders: orders.results,
+    invoices: invoices.results,
+    subscriptions: subscriptions.results,
+    payment_methods: paymentMethods.results,
+    payments: payments.results,
+    audit: auditRows.results
+  };
 }
 
 async function audit(env: Env, action: string, entityType: string, entityId: string, before: unknown, after: unknown) {

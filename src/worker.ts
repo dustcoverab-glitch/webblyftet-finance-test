@@ -15,8 +15,10 @@ import {
   createOffer as createBusinessOffer,
   createOfferAcceptanceToken,
   getCustomerDetail,
+  getInvoiceDetail,
   getOfferDetail,
-  getOfferForToken
+  getOfferForToken,
+  getSubscriptionDetail
 } from "./core/business-flow";
 import {
   connectionStatus,
@@ -54,18 +56,41 @@ app.post("/webhooks/stripe", async (c) => {
 });
 
 app.get("/api/dashboard", async (c) => {
-  const [customers, offers, invoices, receipts, logs, connection] = await Promise.all([
+  const [customers, offers, invoices, projectInvoices, subscriptions, payments, events, receipts, logs, connection] = await Promise.all([
     one<{ count: number }>(c.env.DB, "SELECT COUNT(*) count FROM customers"),
-    one<{ count: number; value: number }>(c.env.DB, "SELECT COUNT(*) count, COALESCE(SUM(total),0) value FROM offers"),
+    one<{ count: number; value: number; accepted_value: number }>(
+      c.env.DB,
+      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value, COALESCE(SUM(CASE WHEN status='ACCEPTED' THEN total ELSE 0 END),0) accepted_value FROM offers"
+    ),
     one<{ count: number; value: number; outstanding: number }>(
       c.env.DB,
       "SELECT COUNT(*) count, COALESCE(SUM(total),0) value, COALESCE(SUM(COALESCE(balance,total)),0) outstanding FROM invoices WHERE cancelled=0"
     ),
+    one<{ count: number; value: number }>(
+      c.env.DB,
+      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value FROM invoices WHERE cancelled=0 AND invoice_type='PROJECT_INVOICE'"
+    ),
+    one<{ active_count: number; mrr_minor: number }>(
+      c.env.DB,
+      `SELECT COUNT(DISTINCT s.id) active_count,
+        COALESCE(SUM(CASE WHEN pr.billing_interval='YEAR' THEN ROUND(si.unit_amount * si.quantity / 12.0) ELSE si.unit_amount * si.quantity END),0) mrr_minor
+       FROM subscriptions s
+       LEFT JOIN subscription_items si ON si.subscription_id=s.id
+       LEFT JOIN prices pr ON pr.id=si.price_id
+       WHERE s.status='ACTIVE'`
+    ),
+    one<{ failed_payments: number; past_due_subscriptions: number }>(
+      c.env.DB,
+      `SELECT
+        (SELECT COUNT(*) FROM payments WHERE status='FAILED') failed_payments,
+        (SELECT COUNT(*) FROM subscriptions WHERE status='PAST_DUE') past_due_subscriptions`
+    ),
+    all<any>(c.env.DB, "SELECT * FROM accounting_events ORDER BY occurred_at DESC, created_at DESC LIMIT 10"),
     one<{ count: number }>(c.env.DB, "SELECT COUNT(*) count FROM receipts"),
     all<any>(c.env.DB, "SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 10"),
     connectionStatus(c.env)
   ]);
-  return c.json({ customers, offers, invoices, receipts, logs, connection });
+  return c.json({ customers, offers, invoices, projectInvoices, subscriptions, payments, events, receipts, logs, connection });
 });
 
 app.get("/auth/fortnox/start", async (c) => c.redirect(await createAuthUrl(c.env)));
@@ -241,6 +266,12 @@ app.get("/api/subscriptions", async (c) => c.json(await all<any>(
    ORDER BY s.created_at DESC`
 )));
 
+app.get("/api/subscriptions/:id", async (c) => {
+  const detail = await getSubscriptionDetail(c.env, c.req.param("id"));
+  if (!detail) return c.json({ error: "Subscription not found" }, 404);
+  return c.json(detail);
+});
+
 app.post("/api/subscriptions", zValidator("json", subscriptionSchema), async (c) => {
   return c.json(await createSubscription(c.env, c.req.valid("json")), 201);
 });
@@ -377,6 +408,12 @@ app.get("/api/invoices", async (c) => c.json(await all<any>(
   c.env.DB,
   `SELECT i.*, c.name customer_name FROM invoices i JOIN customers c ON c.id=i.customer_id ORDER BY i.created_at DESC`
 )));
+
+app.get("/api/invoices/:id", async (c) => {
+  const detail = await getInvoiceDetail(c.env, c.req.param("id"));
+  if (!detail) return c.json({ error: "Invoice not found" }, 404);
+  return c.json(detail);
+});
 
 app.post("/api/invoices/pull", async (c) => {
   const invoices = await pullInvoicesFromFortnox(c.env);
