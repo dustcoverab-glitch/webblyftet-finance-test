@@ -1,8 +1,17 @@
 import { id, one } from "../lib/db";
-import { PublicAppError } from "../integrations/fortnox/client";
+import { PublicAppError } from "../lib/app-error";
 
 export const subscriptionStatuses = ["DRAFT", "PENDING", "ACTIVE", "PAST_DUE", "PAUSED", "CANCELLED", "ENDED"] as const;
 export const paymentStatuses = ["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"] as const;
+
+const allowedPaymentTransitions: Record<typeof paymentStatuses[number], ReadonlySet<typeof paymentStatuses[number]>> = {
+  PENDING: new Set(["PROCESSING", "FAILED"]),
+  PROCESSING: new Set(["SUCCEEDED", "FAILED"]),
+  FAILED: new Set(["PROCESSING"]),
+  SUCCEEDED: new Set(["PARTIALLY_REFUNDED", "REFUNDED"]),
+  PARTIALLY_REFUNDED: new Set(["REFUNDED"]),
+  REFUNDED: new Set()
+};
 
 export type CreateProductInput = {
   name: string;
@@ -26,6 +35,16 @@ export type SubscriptionItemInput = {
   product_id: string;
   price_id: string;
   quantity: number;
+};
+
+type ValidatedSubscriptionItem = {
+  id: string;
+  product_id: string;
+  price_id: string;
+  quantity: number;
+  unit_amount: number;
+  currency: string;
+  billing_interval: "MONTH" | "YEAR";
 };
 
 export function validatePriceInput(input: CreatePriceInput): void {
@@ -112,21 +131,70 @@ export async function createSubscription(env: Env, input: {
 }) {
   if (!input.items.length) throw new PublicAppError(400, "Subscription kräver minst en rad.");
   const subscriptionId = id("sub");
-  await env.DB.prepare(
-    `INSERT INTO subscriptions(id,customer_id,status,currency,start_date,current_period_start,current_period_end)
-     VALUES (?,?,?,?,?,?,?)`
-  ).bind(subscriptionId, input.customer_id, input.status ?? "DRAFT", "SEK", input.start_date, input.start_date, null).run();
-
-  for (const item of input.items) {
-    const price = await one<any>(env.DB, "SELECT * FROM prices WHERE id=? AND active=1", item.price_id);
-    if (!price) throw new PublicAppError(404, "Pris saknas eller är inaktivt.");
-    await env.DB.prepare(
-      `INSERT INTO subscription_items(id,subscription_id,product_id,price_id,quantity,unit_amount)
-       VALUES (?,?,?,?,?,?)`
-    ).bind(id("sitem"), subscriptionId, item.product_id, item.price_id, item.quantity, price.amount).run();
-  }
+  const items = await validateSubscriptionItems(env, input.items);
+  const currency = items[0]?.currency ?? "SEK";
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO subscriptions(id,customer_id,status,currency,start_date,current_period_start,current_period_end)
+       VALUES (?,?,?,?,?,?,?)`
+    ).bind(subscriptionId, input.customer_id, input.status ?? "DRAFT", currency, input.start_date, input.start_date, null),
+    ...items.map((item) =>
+      env.DB.prepare(
+        `INSERT INTO subscription_items(id,subscription_id,product_id,price_id,quantity,unit_amount)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(item.id, subscriptionId, item.product_id, item.price_id, item.quantity, item.unit_amount)
+    )
+  ]);
   await audit(env, "SYSTEM", null, "SUBSCRIPTION_CREATED", "subscription", subscriptionId, null, input);
   return getSubscription(env, subscriptionId);
+}
+
+async function validateSubscriptionItems(env: Env, items: SubscriptionItemInput[]): Promise<ValidatedSubscriptionItem[]> {
+  let currency: string | null = null;
+  const validated: ValidatedSubscriptionItem[] = [];
+
+  for (const item of items) {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      throw new PublicAppError(400, "Quantity måste vara ett positivt heltal.");
+    }
+    const row = await one<any>(
+      env.DB,
+      `SELECT
+         pr.id price_id, pr.product_id price_product_id, pr.amount, pr.currency, pr.billing_type,
+         pr.billing_interval, pr.active price_active,
+         p.id product_id, p.active product_active, p.product_type
+       FROM prices pr
+       JOIN products p ON p.id=pr.product_id
+       WHERE pr.id=?`,
+      item.price_id
+    );
+    if (!row) throw new PublicAppError(404, "Pris saknas.");
+    if (row.product_id !== item.product_id || row.price_product_id !== item.product_id) {
+      throw new PublicAppError(400, "Pris och produkt matchar inte.");
+    }
+    if (row.product_active !== 1 || row.product_type !== "SUBSCRIPTION") {
+      throw new PublicAppError(400, "Produkten är inte ett aktivt abonnemang.");
+    }
+    if (row.price_active !== 1 || row.billing_type !== "RECURRING" || !row.billing_interval) {
+      throw new PublicAppError(400, "Priset är inte ett aktivt återkommande abonnemangspris.");
+    }
+    const rowCurrency = String(row.currency).toUpperCase();
+    if (currency && currency !== rowCurrency) {
+      throw new PublicAppError(400, "Alla abonnemangsrader måste ha samma valuta.");
+    }
+    currency = rowCurrency;
+    validated.push({
+      id: id("sitem"),
+      product_id: item.product_id,
+      price_id: item.price_id,
+      quantity: item.quantity,
+      unit_amount: row.amount,
+      currency: rowCurrency,
+      billing_interval: row.billing_interval
+    });
+  }
+
+  return validated;
 }
 
 export async function getSubscription(env: Env, subscriptionId: string) {
@@ -164,7 +232,17 @@ export async function upsertPayment(env: Env, input: {
       input.provider,
       input.provider_payment_id
     );
-    if (existing) return existing;
+    if (existing) {
+      if (existing.status === input.status) return existing;
+      if (!allowedPaymentTransitions[existing.status as typeof paymentStatuses[number]]?.has(input.status)) {
+        return existing;
+      }
+      await env.DB.prepare(
+        "UPDATE payments SET status=?, paid_at=COALESCE(?,paid_at), updated_at=CURRENT_TIMESTAMP WHERE id=?"
+      ).bind(input.status, input.paid_at ?? null, existing.id).run();
+      await audit(env, "STRIPE", null, "PAYMENT_STATUS_UPDATED", "payment", existing.id, existing, { ...existing, status: input.status });
+      return one<any>(env.DB, "SELECT * FROM payments WHERE id=?", existing.id);
+    }
   }
   const paymentId = id("pay");
   await env.DB.prepare(

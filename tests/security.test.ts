@@ -34,4 +34,28 @@ describe("API health and Access middleware", () => {
 
     expect(response.status).toBe(200);
   });
+
+  it("bypasses Cloudflare Access only for the exact Stripe webhook path and still requires signature", async () => {
+    const exact = await worker.fetch(
+      new Request("https://finance-test.example/webhooks/stripe", {
+        method: "POST",
+        body: "{}"
+      }),
+      workerEnv({ APP_ENV: "test" }),
+      createExecutionContext()
+    );
+    expect(exact.status).toBe(400);
+
+    for (const path of ["/webhooks/stripe/foo", "/webhooks/stripe-test"]) {
+      const response = await worker.fetch(
+        new Request(`https://finance-test.example${path}`, {
+          method: "POST",
+          body: "{}"
+        }),
+        workerEnv({ APP_ENV: "test" }),
+        createExecutionContext()
+      );
+      expect(response.status).toBe(403);
+    }
+  });
 });

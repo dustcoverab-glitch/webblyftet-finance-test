@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
-import { cleanupExpiredOAuthStates, consumeOAuthState, PublicAppError } from "../src/lib/fortnox";
+import { PublicAppError } from "../src/lib/app-error";
+import { cleanupExpiredOAuthStates, consumeOAuthState } from "../src/lib/fortnox";
 import { resetTables } from "./helpers";
 
 describe("OAuth state hygiene", () => {

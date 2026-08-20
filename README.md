@@ -138,13 +138,14 @@ För deployad test/staging ska Cloudflare Access ligga framför hela testsidan.
 
 Workern kräver Cloudflare Access identity headers när `APP_ENV` inte är `local`. Saknas Access-header får klienten HTTP 403 med ett neutralt fel. Lokalt utvecklingsläge är undantaget för att `wrangler dev` ska fungera utan Access.
 
-Enda publika route-undantaget är:
+Enda publika route-undantaget är exakt:
 
 ```text
 POST /webhooks/stripe
 ```
 
 Den routen får vara publik för Stripe, men verifierar alltid `Stripe-Signature` mot `STRIPE_WEBHOOK_SECRET` innan något event behandlas.
+Närliggande paths som `/webhooks/stripe/foo` och `/webhooks/stripe-test` ska fortsätta ligga bakom Cloudflare Access.
 
 ## Fortnox Developer Portal
 
@@ -189,7 +190,7 @@ Implementerat nu:
 - `POST /api/customers/:id/payment-method/setup`
 - `POST /webhooks/stripe`
 
-SetupIntent används som backendgrund för att senare kunna registrera företagskort. Frontend får bara `client_secret` för Stripe-klientflödet. Råa kortnummer får aldrig passera Worker eller D1.
+SetupIntent används som backendgrund för att senare kunna registrera företagskort. Backend skapar en lokal `payment_method_setup_sessions`-rad och använder dess id som Stripe idempotency key. Retries för samma aktiva session återanvänder sparat Stripe SetupIntent ID och `client_secret` i stället för att skapa parallella SetupIntents. Frontend får bara `client_secret` för Stripe-klientflödet. Råa kortnummer får aldrig passera Worker eller D1.
 
 Förberedda webhook event-typer:
 
@@ -203,9 +204,17 @@ Förberedda webhook event-typer:
 
 Stripe Checkout/Elements-flödet är inte skarpt implementerat ännu.
 
+Stripe webhooks lagras i `integration_events` med statusflödet `RECEIVED -> PROCESSING -> PROCESSED` eller `FAILED`. `PROCESSED` och pågående `PROCESSING` behandlas som dubbletter, medan `FAILED` och kvarlämnad `RECEIVED` får köras om. Webhookar för `customer.subscription.created|updated|deleted` uppdaterar bara befintliga lokala subscriptions via `stripe_subscription_id` eller metadata `webblyftet_subscription_id`; okända Stripe subscriptions skapar inte lokal core-data.
+
 ## Products, Prices och Subscriptions
 
 Belopp i `prices`, `payments`, `subscription_items` och `accounting_events` sparas som integer i minsta valutaenhet, till exempel `29500` för 295 kr.
+
+Subscription-rader valideras alltid mot aktiva products/prices innan några DB-skrivningar görs. Produkten måste vara `SUBSCRIPTION`, priset måste vara aktivt `RECURRING`, product/price måste matcha, quantity måste vara ett positivt heltal och alla rader måste ha samma valuta. Klienter får inte ange `unit_amount`; det snapshots alltid från vald price.
+
+Betalningar accepterar bara explicita statusövergångar: `PENDING -> PROCESSING|FAILED`, `PROCESSING -> SUCCEEDED|FAILED`, `FAILED -> PROCESSING`, `SUCCEEDED -> PARTIALLY_REFUNDED|REFUNDED` och `PARTIALLY_REFUNDED -> REFUNDED`. Sena webhookar får därför inte skriva om `SUCCEEDED` till `FAILED`.
+
+Accounting events som skapas från Stripe-betalningar markerar `payload_json.accounting_semantics = "SETTLEMENT"`, eftersom `net_amount=gross` och `vat_amount=0` beskriver betalningsavräkning och inte framtida försäljningsmoms.
 
 Lokala testprodukter kan seedas från UI:t `Produkter & priser` eller via:
 

@@ -1,5 +1,6 @@
 import { decryptString, encryptString } from "../../lib/crypto";
 import { id, one } from "../../lib/db";
+import { PublicAppError } from "../../lib/app-error";
 
 type Connection = {
   id: string;
@@ -14,16 +15,6 @@ const AUTH_URL = "https://apps.fortnox.se/oauth-v1/auth";
 const TOKEN_URL = "https://apps.fortnox.se/oauth-v1/token";
 const API_BASE = "https://api.fortnox.se/3";
 const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|api[_-]?key/i;
-
-export class PublicAppError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly publicMessage: string,
-    public readonly requestId = id("err")
-  ) {
-    super(publicMessage);
-  }
-}
 
 export class FortnoxApiError extends PublicAppError {
   constructor(

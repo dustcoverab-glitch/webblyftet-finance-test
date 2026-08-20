@@ -1,5 +1,5 @@
 import { one } from "../../lib/db";
-import { PublicAppError } from "../fortnox/client";
+import { PublicAppError } from "../../lib/app-error";
 import { stripeClient } from "./client";
 import type { StripeCustomerResult } from "./types";
 

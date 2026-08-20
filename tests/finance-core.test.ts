@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
+import financeSource from "../src/core/finance.ts?raw";
 import {
   createAccountingEvent,
   createPrice,
@@ -15,6 +16,10 @@ import { resetTables, workerEnv } from "./helpers";
 describe("Finance Core", () => {
   beforeEach(async () => {
     await resetTables();
+  });
+
+  it("does not import Fortnox integration code in Finance Core", () => {
+    expect(financeSource).not.toMatch(/integrations\/fortnox|fortnox\/client|from .*fortnox/i);
   });
 
   it("creates products and prices in minor currency units", async () => {
@@ -68,6 +73,59 @@ describe("Finance Core", () => {
     expect(subscription?.items).toHaveLength(2);
   });
 
+  it("rejects subscription rows where product and price do not match", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
+    const service = await createProduct(workerEnv(), { name: "Service", product_type: "SUBSCRIPTION" });
+    const other = await createProduct(workerEnv(), { name: "Other", product_type: "SUBSCRIPTION" });
+    const price = await createPrice(workerEnv(), { product_id: service!.id, amount: 29500, billing_type: "RECURRING", billing_interval: "MONTH" });
+
+    await expect(createSubscription(workerEnv(), {
+      customer_id: "cus_test",
+      start_date: "2026-08-20",
+      items: [{ product_id: other!.id, price_id: price!.id, quantity: 1 }]
+    })).rejects.toThrow(/matchar inte/);
+  });
+
+  it("rejects one-time and inactive subscription inputs", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
+    const oneTime = await createProduct(workerEnv(), { name: "Project", product_type: "ONE_TIME" });
+    const inactiveSubscription = await createProduct(workerEnv(), { name: "Inactive", product_type: "SUBSCRIPTION", active: false });
+    const oneTimePrice = await createPrice(workerEnv(), { product_id: oneTime!.id, amount: 10000, billing_type: "ONE_TIME" });
+    const inactivePrice = await createPrice(workerEnv(), { product_id: inactiveSubscription!.id, amount: 10000, billing_type: "RECURRING", billing_interval: "MONTH" });
+
+    await expect(createSubscription(workerEnv(), {
+      customer_id: "cus_test",
+      start_date: "2026-08-20",
+      items: [{ product_id: oneTime!.id, price_id: oneTimePrice!.id, quantity: 1 }]
+    })).rejects.toThrow(/abonnemang|återkommande/);
+
+    await expect(createSubscription(workerEnv(), {
+      customer_id: "cus_test",
+      start_date: "2026-08-20",
+      items: [{ product_id: inactiveSubscription!.id, price_id: inactivePrice!.id, quantity: 1 }]
+    })).rejects.toThrow(/aktivt abonnemang/);
+  });
+
+  it("does not leave partial subscriptions when a later item is invalid", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
+    const service = await createProduct(workerEnv(), { name: "Service", product_type: "SUBSCRIPTION" });
+    const price = await createPrice(workerEnv(), { product_id: service!.id, amount: 29500, billing_type: "RECURRING", billing_interval: "MONTH" });
+
+    await expect(createSubscription(workerEnv(), {
+      customer_id: "cus_test",
+      start_date: "2026-08-20",
+      items: [
+        { product_id: service!.id, price_id: price!.id, quantity: 1 },
+        { product_id: service!.id, price_id: price!.id, quantity: 0 }
+      ]
+    })).rejects.toThrow(/positivt heltal/);
+
+    const subscriptions = await env.DB.prepare("SELECT COUNT(*) count FROM subscriptions").first<{ count: number }>();
+    const items = await env.DB.prepare("SELECT COUNT(*) count FROM subscription_items").first<{ count: number }>();
+    expect(subscriptions?.count).toBe(0);
+    expect(items?.count).toBe(0);
+  });
+
   it("keeps payment attempts history and prevents duplicate payments", async () => {
     await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
     const payment = await upsertPayment(workerEnv(), {
@@ -90,6 +148,43 @@ describe("Finance Core", () => {
     const attempts = await env.DB.prepare("SELECT COUNT(*) count FROM payment_attempts").first<{ count: number }>();
     expect(duplicate!.id).toBe(payment!.id);
     expect(attempts?.count).toBe(2);
+  });
+
+  it("applies explicit payment status transitions and ignores late failure after success", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
+    const pending = await upsertPayment(workerEnv(), {
+      customer_id: "cus_test",
+      amount: 29500,
+      status: "PENDING",
+      provider: "STRIPE",
+      provider_payment_id: "pi_transition"
+    });
+    const processing = await upsertPayment(workerEnv(), {
+      customer_id: "cus_test",
+      amount: 29500,
+      status: "PROCESSING",
+      provider: "STRIPE",
+      provider_payment_id: "pi_transition"
+    });
+    const succeeded = await upsertPayment(workerEnv(), {
+      customer_id: "cus_test",
+      amount: 29500,
+      status: "SUCCEEDED",
+      provider: "STRIPE",
+      provider_payment_id: "pi_transition"
+    });
+    const lateFailure = await upsertPayment(workerEnv(), {
+      customer_id: "cus_test",
+      amount: 29500,
+      status: "FAILED",
+      provider: "STRIPE",
+      provider_payment_id: "pi_transition"
+    });
+
+    expect(pending?.status).toBe("PENDING");
+    expect(processing?.status).toBe("PROCESSING");
+    expect(succeeded?.status).toBe("SUCCEEDED");
+    expect(lateFailure?.status).toBe("SUCCEEDED");
   });
 
   it("generates accounting events idempotently", async () => {

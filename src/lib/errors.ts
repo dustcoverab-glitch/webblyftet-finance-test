@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { id } from "./db";
-import { PublicAppError } from "./fortnox";
+import { PublicAppError } from "./app-error";
 
 export function errorJson(c: Context<{ Bindings: Env }>, error: unknown): Response {
   if (error instanceof PublicAppError) {

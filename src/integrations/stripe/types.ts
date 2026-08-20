@@ -4,8 +4,10 @@ export type StripeCustomerResult = {
 };
 
 export type StripeSetupIntentResult = {
+  setup_session_id: string;
   setup_intent_id: string;
   client_secret: string | null;
+  reused: boolean;
 };
 
 export const handledStripeEvents = [
