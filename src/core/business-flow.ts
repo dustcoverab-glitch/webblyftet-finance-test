@@ -535,7 +535,7 @@ export async function getInvoiceDetail(env: Env, invoiceId: string) {
     invoiceId
   );
   if (!invoice) return null;
-  const [rows, salesOrder, sourceOffer, accountingEvents, payments, auditRows] = await Promise.all([
+  const [rows, salesOrder, sourceOffer, subscriptions, accountingEvents, payments, auditRows] = await Promise.all([
     env.DB.prepare("SELECT * FROM invoice_rows WHERE invoice_id=? ORDER BY sort_order").bind(invoiceId).all<any>(),
     invoice.sales_order_id
       ? one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", invoice.sales_order_id)
@@ -543,6 +543,9 @@ export async function getInvoiceDetail(env: Env, invoiceId: string) {
     invoice.source_offer_id
       ? one<any>(env.DB, "SELECT id,title,status,total,offer_date,expire_date FROM offers WHERE id=?", invoice.source_offer_id)
       : Promise.resolve(null),
+    invoice.sales_order_id
+      ? env.DB.prepare("SELECT id,status,stripe_subscription_id FROM subscriptions WHERE sales_order_id=? ORDER BY created_at DESC").bind(invoice.sales_order_id).all<any>()
+      : Promise.resolve({ results: [] }),
     env.DB.prepare("SELECT * FROM accounting_events WHERE entity_type='invoice' AND entity_id=? ORDER BY occurred_at DESC, created_at DESC").bind(invoiceId).all<any>(),
     env.DB.prepare("SELECT * FROM payments WHERE invoice_id=? ORDER BY created_at DESC").bind(invoiceId).all<any>(),
     env.DB.prepare("SELECT * FROM audit_log WHERE entity_type='invoice' AND entity_id=? ORDER BY created_at DESC LIMIT 50").bind(invoiceId).all<any>()
@@ -552,6 +555,7 @@ export async function getInvoiceDetail(env: Env, invoiceId: string) {
     rows: rows.results,
     sales_order: salesOrder,
     source_offer: sourceOffer,
+    subscriptions: subscriptions.results,
     accounting_events: accountingEvents.results,
     payments: payments.results,
     audit: auditRows.results

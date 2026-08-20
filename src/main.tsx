@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Link, NavLink, Route, Routes, useParams } from "react-router-dom";
+import { BrowserRouter, Link, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  BadgeCheck, BookOpen, FileCheck2, FileText, Gauge, PlugZap,
-  Package, Plus, ReceiptText, RefreshCw, Repeat, Trash2, Users, WalletCards
+  BadgeCheck, BookOpen, CheckCircle2, CircleAlert, Clock3, FileCheck2, FileText, Gauge, PlugZap,
+  Package, Plus, ReceiptText, RefreshCw, Repeat, Search, Trash2, Users, WalletCards
 } from "lucide-react";
 import { api, post } from "./api";
 import "./styles.css";
@@ -221,8 +221,9 @@ function rowTotalMinor(row: any) {
   return net + Math.round(net * Number(row.vat_percent ?? 0) / 100);
 }
 
-function Metric({ label, value, hint }: { label: string; value: React.ReactNode; hint?: React.ReactNode }) {
-  return <Card><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</Card>;
+function Metric({ label, value, hint, to }: { label: string; value: React.ReactNode; hint?: React.ReactNode; to?: string }) {
+  const inner = <><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</>;
+  return to ? <Link className="card metricCard clickable" to={to}>{inner}</Link> : <Card className="metricCard">{inner}</Card>;
 }
 
 function StatusChain({ status }: { status: string }) {
@@ -240,45 +241,165 @@ function StatusChain({ status }: { status: string }) {
   )}</div>;
 }
 
+function InvoiceTimeline({ invoice }: { invoice: any }) {
+  const events = [
+    { label: "Skapad", time: invoice.created_at, status: "OK" },
+    { label: invoice.fortnox_document_number ? "Synkad/skickad" : "Synk saknas", time: invoice.last_synced_at, status: invoice.fortnox_document_number ? "SYNCED" : "PENDING" },
+    { label: "Förfallen", time: invoice.status === "OVERDUE" || (invoice.due_date && invoice.due_date < new Date().toISOString().slice(0,10) && !["PAID","CREDITED","CANCELLED"].includes(String(invoice.status).toUpperCase())) ? invoice.due_date : null, status: "OVERDUE" },
+    { label: "Betald", time: invoice.payments?.find((payment:any) => payment.status === "SUCCEEDED")?.paid_at || (invoice.status === "PAID" ? invoice.updated_at : null), status: "PAID" }
+  ];
+  return <div className="timeline">{events.map((event) => <div key={event.label} className={`timelineItem ${event.time ? "filled" : ""}`}>
+    <span/><div><strong>{event.label}</strong><small>{event.time ? displayDate(event.time) : "Ingen timestamp"}</small></div>
+  </div>)}</div>;
+}
+
+function monthLabel(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Date(year, monthNumber - 1, 1).toLocaleDateString("sv-SE", { month: "short" }).replace(".", "");
+}
+
+function lastSixMonths() {
+  const now = new Date();
+  return Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - 5 + index, 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  });
+}
+
+function MiniTrend({ invoices = [], payments = [] }: { invoices?: any[]; payments?: any[] }) {
+  const invoiceMap = new Map(invoices.map((row) => [row.month, Number(row.invoiced_minor ?? 0)]));
+  const paymentMap = new Map(payments.map((row) => [row.month, Number(row.paid_minor ?? 0)]));
+  const points = lastSixMonths().map((month) => ({
+    month,
+    invoiced: invoiceMap.get(month) ?? 0,
+    paid: paymentMap.get(month) ?? 0
+  }));
+  const max = Math.max(1, ...points.flatMap((point) => [point.invoiced, point.paid]));
+  return <div className="trendPanel">
+    <div className="panelHead"><div><h3>Ekonomiöversikt</h3><p>Fakturerat och betalt senaste 6 månaderna</p></div><span>SEK</span></div>
+    <div className="trendBars">{points.map((point) => <div className="trendMonth" key={point.month} title={`${monthLabel(point.month)}: fakturerat ${moneyMinor(point.invoiced)}, betalt ${moneyMinor(point.paid)}`}>
+      <div className="trendStack">
+        <span className="bar invoiced" style={{ height: `${Math.max(4, point.invoiced / max * 100)}%` }} />
+        <span className="bar paid" style={{ height: `${Math.max(4, point.paid / max * 100)}%` }} />
+      </div>
+      <small>{monthLabel(point.month)}</small>
+    </div>)}</div>
+    <div className="legend"><span><i className="legendInvoiced"/>Fakturerat</span><span><i className="legendPaid"/>Betalt</span></div>
+  </div>;
+}
+
+function activityTarget(item: any) {
+  if (item.entity_type === "invoice") return `/invoices/${item.entity_id}`;
+  if (item.entity_type === "offer") return `/offers/${item.entity_id}`;
+  if (item.entity_type === "subscription") return `/subscriptions/${item.entity_id}`;
+  if (item.entity_type === "customer") return `/customers/${item.entity_id}`;
+  return "";
+}
+
 function Dashboard() {
   const [data, setData] = useState<any>(null);
   useEffect(() => { api("/api/dashboard").then(setData).catch(console.error); }, []);
   if (!data) return <div>Hämtar…</div>;
   const failedOrPastDue = Number(data.payments?.failed_payments ?? 0) + Number(data.payments?.past_due_subscriptions ?? 0);
+  const statusCounts = new Map((data.subscriptionStatus ?? []).map((row:any) => [row.status, Number(row.count ?? 0)]));
+  const active = Number(statusCounts.get("ACTIVE") ?? 0);
+  const pending = Number(statusCounts.get("PENDING") ?? 0);
+  const pastDue = Number(statusCounts.get("PAST_DUE") ?? 0);
+  const canceling = Number(data.subscriptions?.cancel_at_period_end ?? 0);
+  const subscriptionTotal = Math.max(1, active + pending + pastDue + canceling);
+  const attention = [
+    ...(data.attention?.invoices ?? []).map((item:any) => ({
+      id: `invoice-${item.id}`,
+      to: `/invoices/${item.id}`,
+      title: item.due_date && item.due_date < new Date().toISOString().slice(0,10) ? "Förfallen faktura" : "Faktura behöver synk",
+      meta: `${item.customer_name} · ${invoiceLabel(item)}`,
+      status: item.status
+    })),
+    ...(data.attention?.payments ?? []).map((item:any) => ({
+      id: `payment-${item.id}`,
+      to: "/subscriptions",
+      title: "Misslyckad betalning",
+      meta: `${item.customer_name} · ${moneyMinor(item.amount)}`,
+      status: item.status
+    })),
+    ...(data.attention?.subscriptions ?? []).map((item:any) => ({
+      id: `subscription-${item.id}`,
+      to: `/subscriptions/${item.id}`,
+      title: "Subscription past due",
+      meta: `${item.customer_name} · ${item.stripe_subscription_id || item.id}`,
+      status: item.status
+    })),
+    ...(data.attention?.orders ?? []).map((item:any) => ({
+      id: `order-${item.id}`,
+      to: "/customers",
+      title: "Order i partial failure",
+      meta: `${item.customer_name} · ${item.id}`,
+      status: item.status
+    })),
+    ...(data.attention?.sync ?? []).map((item:any) => ({
+      id: `sync-${item.id}`,
+      to: "/integration",
+      title: "Integrationsfel",
+      meta: `${item.operation} · ${item.entity_type}`,
+      status: "ERROR"
+    }))
+  ].slice(0, 8);
   return <>
-    <PageHead title="Finance Control" subtitle="Operativ testöversikt för kund, offert, faktura och subscription." />
-    <div className="metricGrid">
-      <Metric label="Kunder" value={data.customers?.count ?? 0} hint="totalt i Finance Core" />
-      <Metric label="Offertvärde" value={money(data.offers?.value)} hint={`${data.offers?.count ?? 0} offerter`} />
-      <Metric label="Accepterat offertvärde" value={money(data.offers?.accepted_value)} hint="status ACCEPTED" />
-      <Metric label="Projektfakturor" value={money(data.projectInvoices?.value)} hint={`${data.projectInvoices?.count ?? 0} fakturor`} />
-      <Metric label="Outstanding" value={money(data.invoices?.outstanding)} hint="öppet fakturasaldo" />
-      <Metric label="Aktiva subscriptions" value={data.subscriptions?.active_count ?? 0} hint="status ACTIVE" />
-      <Metric label="MRR" value={moneyMinor(data.subscriptions?.mrr_minor)} hint={`ARR ${moneyMinor((data.subscriptions?.mrr_minor ?? 0) * 12)}`} />
-      <Metric label="Failed / past due" value={failedOrPastDue} hint={`${data.payments?.failed_payments ?? 0} payments, ${data.payments?.past_due_subscriptions ?? 0} subscriptions`} />
-    </div>
-    <Card>
-      <h3>Senaste ekonomiska events</h3>
-      <table><thead><tr><th>Händelse</th><th>Entity</th><th>Belopp</th><th>Status</th><th>Tid</th></tr></thead><tbody>
-        {data.events?.map((event:any)=><tr key={event.id}>
-          <td><strong>{event.event_type}</strong><small>{event.id}</small></td>
-          <td>{event.entity_type}<small>{event.entity_id}</small></td>
-          <td>{moneyMinor(event.gross_amount)}<small>netto {moneyMinor(event.net_amount)} · moms {moneyMinor(event.vat_amount)}</small></td>
-          <td><Status value={event.status}/></td>
-          <td>{displayDate(event.occurred_at)}</td>
-        </tr>)}
-        {!data.events?.length && <tr><td colSpan={5} className="muted">Inga accounting events ännu.</td></tr>}
-      </tbody></table>
+    <PageHead title="Finance Control Center" subtitle="Operativ testöversikt för kundfordringar, fakturering och abonnemang."
+      action={<div className="quickActions"><Link to="/customers" className="button ghost small"><Users size={14}/>Ny kund</Link><Link to="/offers" className="button ghost small"><FileCheck2 size={14}/>Ny offert</Link><Link to="/invoices" className="button ghost small">Fakturor</Link><Link to="/subscriptions" className="button ghost small">Abonnemang</Link></div>} />
+    <Card className="attentionCard">
+      <div className="panelHead"><div><h3>Kräver uppmärksamhet</h3><p>Prioriterade avvikelser i testmiljön</p></div>{attention.length ? <CircleAlert size={18}/> : <CheckCircle2 size={18}/>}</div>
+      {attention.length ? <div className="attentionList">{attention.map((item:any) =>
+        <Link key={item.id} to={item.to} className="attentionRow"><div><strong>{item.title}</strong><small>{item.meta}</small></div><Status value={item.status}/></Link>
+      )}</div> : <div className="goodState"><CheckCircle2 size={18}/><span>Allt ser bra ut</span></div>}
     </Card>
-    <div className="twoCol">
-      <Card><h3>Fortnox</h3><div className="connection">
-        <div className={`dot ${data.connection?.connected ? "on" : ""}`}></div>
-        <div><strong>{data.connection?.connected ? data.connection.company_name || "Ansluten" : "Inte ansluten"}</strong>
-        <p>{data.connection?.connected ? "OAuth/service account aktiv" : "Anslut från integrationssidan."}</p></div>
-      </div></Card>
-      <Card><h3>Senaste synk</h3><div className="logList">{data.logs?.slice(0,6).map((l:any)=>
-        <div key={l.id}><span>{l.operation} {l.entity_type}</span><Status value={l.success ? "OK" : "ERROR"}/></div>
-      )}</div></Card>
+    <div className="metricGrid">
+      <Metric label="Fakturerat projektvärde" value={money(data.projectInvoices?.value)} hint={`${data.projectInvoices?.count ?? 0} projektfakturor`} to="/invoices?filter=project" />
+      <Metric label="Utestående kundfordringar" value={moneyMinor(data.receivables?.outstanding_minor)} hint={`${data.receivables?.unpaid_count ?? 0} obetalda`} to="/invoices?filter=outstanding" />
+      <Metric label="Aktiv MRR" value={moneyMinor(data.subscriptions?.mrr_minor)} hint={`ARR ${moneyMinor((data.subscriptions?.mrr_minor ?? 0) * 12)}`} to="/subscriptions" />
+      <Metric label="Aktiva abonnemang" value={active} hint={`${pending} pending · ${pastDue} past due`} to="/subscriptions" />
+      <Metric label="Obetalda/förfallna" value={data.receivables?.overdue_count ?? 0} hint={`${failedOrPastDue} failed/past due payments`} to="/invoices?filter=overdue" />
+      <Metric label="Accepterad pipeline" value={money(data.offers?.accepted_value)} hint={`${data.offers?.count ?? 0} offerter totalt`} to="/offers" />
+    </div>
+    <div className="controlGrid">
+      <Card><MiniTrend invoices={data.trend?.invoices} payments={data.trend?.payments}/></Card>
+      <Card><div className="panelHead"><div><h3>Kundfordringar</h3><p>Cash och receivables</p></div><Clock3 size={18}/></div>
+        <div className="cashGrid">
+          <Link to="/invoices?filter=outstanding"><span>Totalt utestående</span><strong>{moneyMinor(data.receivables?.outstanding_minor)}</strong></Link>
+          <Link to="/invoices?filter=due-soon"><span>Förfaller inom 7 dagar</span><strong>{moneyMinor(data.receivables?.due_soon_minor)}</strong></Link>
+          <Link to="/invoices?filter=overdue"><span>Förfallet</span><strong>{moneyMinor(data.receivables?.overdue_minor)}</strong></Link>
+          <div><span>Betalt senaste 30 dagar</span><strong>{moneyMinor(data.receivables?.paid_30d_minor)}</strong></div>
+        </div>
+      </Card>
+      <Card><div className="panelHead"><div><h3>Subscription Pulse</h3><p>Statusfördelning och MRR</p></div><Repeat size={18}/></div>
+        <div className="pulseBar">
+          <Link to="/subscriptions?filter=active" className="pulse active" style={{ flexGrow: Math.max(1, active) }} title={`Active ${active}`}/>
+          <Link to="/subscriptions?filter=pending" className="pulse pending" style={{ flexGrow: Math.max(1, pending) }} title={`Pending ${pending}`}/>
+          <Link to="/subscriptions?filter=past_due" className="pulse dangerPulse" style={{ flexGrow: Math.max(1, pastDue) }} title={`Past due ${pastDue}`}/>
+        </div>
+        <div className="pulseStats">
+          <Link to="/subscriptions?filter=active"><span>Active</span><strong>{active}</strong></Link>
+          <Link to="/subscriptions?filter=pending"><span>Pending</span><strong>{pending}</strong></Link>
+          <Link to="/subscriptions?filter=past_due"><span>Past due</span><strong>{pastDue}</strong></Link>
+          <div><span>MRR</span><strong>{moneyMinor(data.subscriptions?.mrr_minor)}</strong></div>
+        </div>
+        <p className="muted">{canceling} avslutas vid periodslut · fördelning viktad på {subscriptionTotal} subscriptions.</p>
+      </Card>
+      <Card><div className="panelHead"><div><h3>Senaste aktivitet</h3><p>Business, audit och ekonomihändelser</p></div></div>
+        <div className="activityList">
+          {(data.audit ?? []).slice(0, 8).map((item:any) => {
+            const to = activityTarget(item);
+            const content = <><FileText size={15}/><div><strong>{item.action}</strong><small>{item.entity_type} · {item.entity_id}</small></div><span>{displayDate(item.created_at)}</span></>;
+            return to ? <Link key={item.id} to={to} className="activityRow">{content}</Link> : <div key={item.id} className="activityRow">{content}</div>;
+          })}
+          {!data.audit?.length && <p className="muted">Ingen aktivitet ännu.</p>}
+        </div>
+      </Card>
+    </div>
+    <div className="integrationStrip">
+      <div><span>Stripe</span><Status value={data.stripe?.configured ? "CONNECTED" : "NOT CONFIGURED"}/></div>
+      <div><span>Fortnox</span><Status value={data.connection?.connected ? "CONNECTED" : data.connection?.configured === false ? "NOT CONFIGURED" : "WAITING"}/></div>
+      <div><span>D1/R2</span><Status value="OK"/></div>
     </div>
   </>;
 }
@@ -541,14 +662,66 @@ function OfferRowsTable({ rows }: { rows: OfferEditorRow[] }) {
 
 function Invoices() {
   const [rows,setRows]=useState<Invoice[]>([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("latest");
   const load=()=>api<Invoice[]>("/api/invoices").then(setRows);
   useEffect(()=>{load().catch(console.error)},[]);
+  const filter = searchParams.get("filter") || "all";
+  const today = new Date().toISOString().slice(0,10);
+  const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0,10);
+  const filteredRows = useMemo(() => rows
+    .filter((row) => {
+      const status = String(row.status || "").toUpperCase();
+      const outstanding = !["PAID","CREDITED","CANCELLED"].includes(status) && Number(row.balance ?? row.total ?? 0) > 0;
+      if (filter === "draft") return status === "DRAFT";
+      if (filter === "outstanding") return outstanding;
+      if (filter === "paid") return status === "PAID";
+      if (filter === "overdue") return outstanding && Boolean(row.due_date) && String(row.due_date) < today;
+      if (filter === "due-soon") return outstanding && Boolean(row.due_date) && String(row.due_date) >= today && String(row.due_date) <= nextWeek;
+      if (filter === "project") return row.invoice_type !== "SUBSCRIPTION_INVOICE";
+      if (filter === "subscription") return row.invoice_type === "SUBSCRIPTION_INVOICE";
+      return true;
+    })
+    .filter((row) => {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return true;
+      return [invoiceLabel(row), row.customer_name, row.fortnox_document_number].some((value) => String(value ?? "").toLowerCase().includes(needle));
+    })
+    .sort((a, b) => {
+      if (sort === "due") return String(a.due_date || "9999").localeCompare(String(b.due_date || "9999"));
+      if (sort === "amount") return Number(b.total ?? 0) - Number(a.total ?? 0);
+      return String(b.invoice_date || b.due_date || "").localeCompare(String(a.invoice_date || a.due_date || ""));
+    }), [rows, filter, query, sort, today, nextWeek]);
+  const filters = [
+    ["all", "Alla"],
+    ["draft", "Draft"],
+    ["outstanding", "Utestående"],
+    ["paid", "Betalda"],
+    ["overdue", "Förfallna"],
+    ["project", "Project invoices"],
+    ["subscription", "Subscription invoices"]
+  ];
   return <>
     <PageHead title="Fakturor" subtitle="Intern fakturavy med status, saldo och kopplingar till order/offert."
       action={<button className="ghost" onClick={async()=>{await post("/api/invoices/pull"); await load();}}><RefreshCw size={16}/>Synka fakturor</button>}/>
-    <Card><table><thead><tr><th>#</th><th>Typ</th><th>Kund</th><th>Belopp</th><th>Saldo</th><th>Förfallo</th><th>Status</th><th>Fortnox</th></tr></thead><tbody>
-      {rows.map(r=><tr key={r.id}><td><Link to={`/invoices/${r.id}`}>{invoiceLabel(r)}</Link><small>{r.id}</small></td><td>{r.invoice_type || "PROJECT_INVOICE"}</td><td>{r.customer_name}</td><td>{money(r.total)}</td><td>{money(r.balance)}</td><td>{displayDate(r.due_date)}</td><td><Status value={r.status}/></td><td>{r.fortnox_document_number || "—"}</td></tr>)}
-      {!rows.length && <tr><td colSpan={8} className="muted">Inga fakturor.</td></tr>}
+    <Card className="invoiceWorkspace">
+      <div className="tableTools">
+        <div className="filterTabs">{filters.map(([key, label]) =>
+          <button key={key} className={`tabButton ${filter === key ? "active" : ""}`} onClick={()=>setSearchParams(key === "all" ? {} : { filter: key })}>{label}</button>
+        )}</div>
+        <label className="searchBox"><Search size={15}/><input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="Sök fakturanummer, kund eller Fortnox-ID"/></label>
+        <select value={sort} onChange={(event)=>setSort(event.target.value)}>
+          <option value="latest">Senaste först</option>
+          <option value="due">Förfallodatum</option>
+          <option value="amount">Högsta belopp</option>
+        </select>
+      </div>
+      <table><thead><tr><th>#</th><th>Kund</th><th>Typ</th><th>Fakturadatum</th><th>Förfallo</th><th>Total</th><th>Saldo</th><th>Status</th><th>Fortnox</th><th></th></tr></thead><tbody>
+      {filteredRows.map(r=><tr key={r.id} className="clickRow" onClick={()=>navigate(`/invoices/${r.id}`)}><td><strong>{invoiceLabel(r)}</strong><small>{r.id}</small></td><td>{r.customer_name}</td><td>{r.invoice_type || "PROJECT_INVOICE"}</td><td>{displayDate(r.invoice_date)}</td><td>{displayDate(r.due_date)}</td><td>{money(r.total)}</td><td>{money(r.balance)}</td><td><Status value={r.status}/></td><td>{r.fortnox_document_number || <span className="muted">Ej synkad</span>}<small>{r.sync_status || "LOCAL_ONLY"}</small></td>
+        <td><div className="rowActions"><Link className="button small ghost" to={`/invoices/${r.id}`} onClick={(event)=>event.stopPropagation()}>Visa</Link>{!r.fortnox_document_number && <button className="small" onClick={async(event)=>{event.stopPropagation(); await post(`/api/invoices/${r.id}/sync-fortnox`); await load();}}>Sync</button>}</div></td></tr>)}
+      {!filteredRows.length && <tr><td colSpan={10} className="muted">Inga fakturor matchar filtret.</td></tr>}
     </tbody></table></Card>
   </>;
 }
@@ -563,10 +736,17 @@ function InvoiceDetail() {
   const vat = minorField(invoice, "vat_total_minor", "vat_total");
   const total = minorField(invoice, "total_minor", "total");
   const balance = minorField(invoice, "balance_minor", "balance");
+  const paid = Math.max(0, total - balance);
   const accountingReady = invoice.accounting_events?.some((event:any) => ["READY","EXPORTED"].includes(event.status));
   return <>
     <PageHead title={`Faktura ${invoiceLabel(invoice)}`} subtitle={`${invoice.customer_name} · ${invoice.invoice_type || "PROJECT_INVOICE"}`}
-      action={<Link className="button ghost" to={`/customers/${invoice.customer_id}`}>Visa kund</Link>} />
+      action={<div className="actions"><Link className="button ghost" to={`/customers/${invoice.customer_id}`}>Gå till kund</Link>{invoice.source_offer_id && <Link className="button ghost" to={`/offers/${invoice.source_offer_id}`}>Gå till offert</Link>}{!invoice.fortnox_document_number && <button onClick={async()=>{await post(`/api/invoices/${invoice.id}/sync-fortnox`); await load();}}>Sync Fortnox</button>}</div>} />
+    <Card className="invoiceHero">
+      <div><span>Fakturanummer</span><strong>{invoiceLabel(invoice)}</strong><small>{invoice.customer_name}</small></div>
+      <div><span>Status</span><Status value={invoice.status}/></div>
+      <div><span>Total</span><strong>{moneyMinor(total)}</strong></div>
+      <div><span>Saldo</span><strong>{moneyMinor(balance)}</strong></div>
+    </Card>
     <StatusChain status={invoice.status}/>
     <div className="metricGrid">
       <Metric label="Subtotal" value={moneyMinor(subtotal)} hint="exkl. moms" />
@@ -587,13 +767,15 @@ function InvoiceDetail() {
         <div><span>Kund</span><Link to={`/customers/${invoice.customer_id}`}>{invoice.customer_name}</Link></div>
         <div><span>Sales order</span><strong>{invoice.sales_order_id || "—"}</strong></div>
         <div><span>Source offer</span>{invoice.source_offer_id ? <Link to={`/offers/${invoice.source_offer_id}`}>{invoice.source_offer?.title || invoice.source_offer_title || invoice.source_offer_id}</Link> : <strong>—</strong>}</div>
+        <div><span>Subscription</span>{invoice.subscriptions?.[0] ? <Link to={`/subscriptions/${invoice.subscriptions[0].id}`}>{invoice.subscriptions[0].stripe_subscription_id || invoice.subscriptions[0].id}</Link> : <strong>—</strong>}</div>
         <div><span>Statuskedja</span><Status value={invoice.status}/></div>
       </div></Card>
     </div>
     <Card><h3>Invoice rows</h3><table><thead><tr><th>Rad</th><th>Typ</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>
       {invoice.rows?.map((row:any)=><tr key={row.id}><td>{row.description}<small>{row.product_id || "Fri rad"}</small></td><td>{row.billing_type || "ONE_TIME"}<small>{row.billing_interval || ""}</small></td><td>{row.quantity} {row.unit || ""}</td><td>{moneyMinor(row.unit_price_minor ?? parseMoneyInputToMinor(row.unit_price))}</td><td>{row.discount_percent ?? 0}%</td><td>{row.vat_percent ?? 0}%</td><td><strong>{moneyMinor(rowTotalMinor(row))}</strong></td></tr>)}
       {!invoice.rows?.length && <tr><td colSpan={7} className="muted">Inga fakturarader.</td></tr>}
-    </tbody></table></Card>
+    </tbody><tfoot><tr><td colSpan={5}></td><td>Subtotal</td><td>{moneyMinor(subtotal)}</td></tr><tr><td colSpan={5}></td><td>VAT</td><td>{moneyMinor(vat)}</td></tr><tr><td colSpan={5}></td><td>Total</td><td><strong>{moneyMinor(total)}</strong></td></tr><tr><td colSpan={5}></td><td>Paid</td><td>{moneyMinor(paid)}</td></tr><tr><td colSpan={5}></td><td>Outstanding</td><td>{moneyMinor(balance)}</td></tr></tfoot></table></Card>
+    <Card><h3>Status timeline</h3><InvoiceTimeline invoice={invoice}/></Card>
     <div className="twoCol">
       <Card><h3>Accounting events</h3><table><thead><tr><th>Event</th><th>Belopp</th><th>Status</th><th>Tid</th></tr></thead><tbody>
         {invoice.accounting_events?.map((event:any)=><tr key={event.id}><td>{event.event_type}<small>{event.id}</small></td><td>{moneyMinor(event.gross_amount)}</td><td><Status value={event.status}/></td><td>{displayDate(event.occurred_at)}</td></tr>)}

@@ -56,7 +56,29 @@ app.post("/webhooks/stripe", async (c) => {
 });
 
 app.get("/api/dashboard", async (c) => {
-  const [customers, offers, invoices, projectInvoices, subscriptions, payments, events, receipts, logs, connection] = await Promise.all([
+  const [
+    customers,
+    offers,
+    invoices,
+    projectInvoices,
+    subscriptionInvoices,
+    subscriptions,
+    subscriptionStatus,
+    receivables,
+    payments,
+    invoiceTrend,
+    paymentTrend,
+    events,
+    audit,
+    attentionInvoices,
+    attentionPayments,
+    attentionSubscriptions,
+    attentionOrders,
+    attentionSync,
+    receipts,
+    logs,
+    connection
+  ] = await Promise.all([
     one<{ count: number }>(c.env.DB, "SELECT COUNT(*) count FROM customers"),
     one<{ count: number; value: number; accepted_value: number }>(
       c.env.DB,
@@ -70,14 +92,32 @@ app.get("/api/dashboard", async (c) => {
       c.env.DB,
       "SELECT COUNT(*) count, COALESCE(SUM(total),0) value FROM invoices WHERE cancelled=0 AND invoice_type='PROJECT_INVOICE'"
     ),
-    one<{ active_count: number; mrr_minor: number }>(
+    one<{ count: number; value: number }>(
+      c.env.DB,
+      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value FROM invoices WHERE cancelled=0 AND invoice_type='SUBSCRIPTION_INVOICE'"
+    ),
+    one<{ active_count: number; mrr_minor: number; cancel_at_period_end: number }>(
       c.env.DB,
       `SELECT COUNT(DISTINCT s.id) active_count,
-        COALESCE(SUM(CASE WHEN pr.billing_interval='YEAR' THEN ROUND(si.unit_amount * si.quantity / 12.0) ELSE si.unit_amount * si.quantity END),0) mrr_minor
+        COALESCE(SUM(CASE WHEN pr.billing_interval='YEAR' THEN ROUND(si.unit_amount * si.quantity / 12.0) ELSE si.unit_amount * si.quantity END),0) mrr_minor,
+        COUNT(DISTINCT CASE WHEN s.cancel_at_period_end=1 THEN s.id END) cancel_at_period_end
        FROM subscriptions s
        LEFT JOIN subscription_items si ON si.subscription_id=s.id
        LEFT JOIN prices pr ON pr.id=si.price_id
        WHERE s.status='ACTIVE'`
+    ),
+    all<{ status: string; count: number }>(c.env.DB, "SELECT status, COUNT(*) count FROM subscriptions GROUP BY status"),
+    one<{ outstanding_minor: number; due_soon_minor: number; overdue_minor: number; paid_30d_minor: number; unpaid_count: number; overdue_count: number }>(
+      c.env.DB,
+      `SELECT
+        COALESCE(SUM(CASE WHEN status NOT IN ('PAID','CREDITED','CANCELLED') THEN COALESCE(balance_minor, ROUND(COALESCE(balance,total) * 100)) ELSE 0 END),0) outstanding_minor,
+        COALESCE(SUM(CASE WHEN status NOT IN ('PAID','CREDITED','CANCELLED') AND due_date BETWEEN date('now') AND date('now','+7 days') THEN COALESCE(balance_minor, ROUND(COALESCE(balance,total) * 100)) ELSE 0 END),0) due_soon_minor,
+        COALESCE(SUM(CASE WHEN status NOT IN ('PAID','CREDITED','CANCELLED') AND due_date < date('now') THEN COALESCE(balance_minor, ROUND(COALESCE(balance,total) * 100)) ELSE 0 END),0) overdue_minor,
+        COALESCE(SUM(CASE WHEN status='PAID' AND updated_at >= datetime('now','-30 days') THEN COALESCE(total_minor, ROUND(total * 100)) ELSE 0 END),0) paid_30d_minor,
+        SUM(CASE WHEN status NOT IN ('PAID','CREDITED','CANCELLED') THEN 1 ELSE 0 END) unpaid_count,
+        SUM(CASE WHEN status NOT IN ('PAID','CREDITED','CANCELLED') AND due_date < date('now') THEN 1 ELSE 0 END) overdue_count
+       FROM invoices
+       WHERE cancelled=0`
     ),
     one<{ failed_payments: number; past_due_subscriptions: number }>(
       c.env.DB,
@@ -85,12 +125,81 @@ app.get("/api/dashboard", async (c) => {
         (SELECT COUNT(*) FROM payments WHERE status='FAILED') failed_payments,
         (SELECT COUNT(*) FROM subscriptions WHERE status='PAST_DUE') past_due_subscriptions`
     ),
+    all<{ month: string; invoiced_minor: number }>(
+      c.env.DB,
+      `SELECT strftime('%Y-%m', invoice_date) month, COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) invoiced_minor
+       FROM invoices
+       WHERE invoice_date >= date('now','start of month','-5 months') AND cancelled=0
+       GROUP BY strftime('%Y-%m', invoice_date)
+       ORDER BY month`
+    ),
+    all<{ month: string; paid_minor: number }>(
+      c.env.DB,
+      `SELECT strftime('%Y-%m', COALESCE(paid_at, created_at)) month, COALESCE(SUM(amount),0) paid_minor
+       FROM payments
+       WHERE status='SUCCEEDED' AND COALESCE(paid_at, created_at) >= date('now','start of month','-5 months')
+       GROUP BY strftime('%Y-%m', COALESCE(paid_at, created_at))
+       ORDER BY month`
+    ),
     all<any>(c.env.DB, "SELECT * FROM accounting_events ORDER BY occurred_at DESC, created_at DESC LIMIT 10"),
+    all<any>(
+      c.env.DB,
+      `SELECT * FROM audit_log
+       WHERE action IN ('OFFER_CREATED','OFFER_ACCEPTED','SALES_ORDER_CREATED','INVOICE_CREATED','SUBSCRIPTION_ACTIVATION_REQUESTED','SUBSCRIPTION_ACTIVATED','PAYMENT_RECEIVED','PAYMENT_FAILED')
+       ORDER BY created_at DESC LIMIT 10`
+    ),
+    all<any>(
+      c.env.DB,
+      `SELECT i.id, i.invoice_number, i.fortnox_document_number, i.status, i.due_date, i.total, i.balance, i.sync_status, c.name customer_name
+       FROM invoices i JOIN customers c ON c.id=i.customer_id
+       WHERE i.cancelled=0 AND i.status NOT IN ('PAID','CREDITED','CANCELLED') AND (i.due_date < date('now') OR i.sync_status!='SYNCED')
+       ORDER BY CASE WHEN i.due_date < date('now') THEN 0 ELSE 1 END, i.due_date LIMIT 6`
+    ),
+    all<any>(
+      c.env.DB,
+      `SELECT p.id, p.status, p.amount, p.provider_payment_id, p.created_at, c.name customer_name
+       FROM payments p JOIN customers c ON c.id=p.customer_id
+       WHERE p.status='FAILED'
+       ORDER BY p.created_at DESC LIMIT 4`
+    ),
+    all<any>(
+      c.env.DB,
+      `SELECT s.id, s.status, s.stripe_subscription_id, s.updated_at, c.name customer_name
+       FROM subscriptions s JOIN customers c ON c.id=s.customer_id
+       WHERE s.status='PAST_DUE'
+       ORDER BY s.updated_at DESC LIMIT 4`
+    ),
+    all<any>(
+      c.env.DB,
+      `SELECT so.id, so.status, so.created_at, c.name customer_name
+       FROM sales_orders so JOIN customers c ON c.id=so.customer_id
+       WHERE so.status='PARTIAL_FAILURE'
+       ORDER BY so.created_at DESC LIMIT 4`
+    ),
+    all<any>(c.env.DB, "SELECT * FROM sync_log WHERE success=0 ORDER BY created_at DESC LIMIT 4"),
     one<{ count: number }>(c.env.DB, "SELECT COUNT(*) count FROM receipts"),
     all<any>(c.env.DB, "SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 10"),
     connectionStatus(c.env)
   ]);
-  return c.json({ customers, offers, invoices, projectInvoices, subscriptions, payments, events, receipts, logs, connection });
+  return c.json({
+    customers,
+    offers,
+    invoices,
+    projectInvoices,
+    subscriptionInvoices,
+    subscriptions,
+    subscriptionStatus,
+    receivables,
+    payments,
+    trend: { invoices: invoiceTrend, payments: paymentTrend },
+    events,
+    audit,
+    attention: { invoices: attentionInvoices, payments: attentionPayments, subscriptions: attentionSubscriptions, orders: attentionOrders, sync: attentionSync },
+    receipts,
+    logs,
+    connection,
+    stripe: { configured: isStripeConfigured(c.env) }
+  });
 });
 
 app.get("/auth/fortnox/start", async (c) => c.redirect(await createAuthUrl(c.env)));
