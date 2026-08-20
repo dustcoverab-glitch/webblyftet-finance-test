@@ -315,25 +315,34 @@ app.get("/sign/:token", async (c) => {
   const token = await getOfferForToken(c.env, c.req.param("token"));
   if (!token) return c.text("Ogiltig eller utgången offertlänk.", 404);
   const snapshot = token.snapshot;
+  const money = (minor: number) => escapeHtml((minor / 100).toLocaleString("sv-SE", { style: "currency", currency: snapshot.offer.currency ?? "SEK" }));
+  const rowNet = (row: any) => Math.round(row.unit_price_minor * Number(row.quantity) * (1 - Number(row.discount_percent ?? 0) / 100));
+  const rowVat = (row: any) => Math.round(rowNet(row) * (Number(row.vat_percent ?? 0) / 100));
+  const oneTimeRows = snapshot.rows.filter((row: any) => row.billing_type === "ONE_TIME");
+  const recurringRows = snapshot.rows.filter((row: any) => row.billing_type === "RECURRING");
+  const sum = (rows: any[], fn: (row: any) => number) => rows.reduce((total, row) => total + fn(row), 0);
+  const oneTimeNet = sum(oneTimeRows, rowNet);
+  const oneTimeVat = sum(oneTimeRows, rowVat);
+  const recurringMonthlyNet = sum(recurringRows, (row) => Math.round(rowNet(row) / (row.billing_interval === "YEAR" ? 12 : 1)));
+  const recurringMonthlyVat = sum(recurringRows, (row) => Math.round(rowVat(row) / (row.billing_interval === "YEAR" ? 12 : 1)));
   const title = escapeHtml(snapshot.offer.title || "Offert");
   const customerName = escapeHtml(snapshot.offer.customer_name);
-  const amount = escapeHtml((Number(snapshot.totals.total) / 100).toLocaleString("sv-SE"));
-  const rows = snapshot.rows.map((row: any) => `<tr><td>${escapeHtml(row.description)}</td><td>${escapeHtml(String(row.quantity))}</td><td>${escapeHtml((row.unit_price_minor / 100).toLocaleString("sv-SE"))} kr</td><td>${escapeHtml(row.billing_type)}</td></tr>`).join("");
+  const remarks = escapeHtml(snapshot.offer.remarks || "");
+  const validUntil = escapeHtml(snapshot.offer.expire_date || "Ej angivet");
+  const rowsHtml = (rows: any[]) => rows.map((row: any) => `<tr><td><strong>${escapeHtml(row.description)}</strong><small>${escapeHtml(row.billing_type)}${row.billing_interval ? ` / ${escapeHtml(row.billing_interval)}` : ""}</small></td><td>${escapeHtml(String(row.quantity))}</td><td>${money(row.unit_price_minor)}</td><td>${escapeHtml(String(row.discount_percent ?? 0))}%</td><td>${escapeHtml(String(row.vat_percent ?? 0))}%</td><td>${money(rowNet(row) + rowVat(row))}</td></tr>`).join("");
   return c.html(`<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-  <title>Acceptera offert</title><style>body{font-family:system-ui;background:#f4f2ee;color:#171717;max-width:720px;margin:50px auto;padding:24px}
-  .card{background:white;border:1px solid #ddd7cf;border-radius:18px;padding:32px}.amount{font-size:34px;font-weight:750}
-  table{width:100%;border-collapse:collapse;margin:20px 0}td,th{text-align:left;border-bottom:1px solid #e6e0d8;padding:9px}
-  input{width:100%;box-sizing:border-box;padding:12px;margin:6px 0 14px;border:1px solid #bbb;border-radius:9px}
-  button{padding:13px 20px;background:#171717;color:#fff;border:0;border-radius:9px;font-weight:650}</style></head><body>
-  <div class="card"><small>WEBBLYFTET · TEST</small><h1>${title}</h1>
-  <p>Kund: ${customerName}</p><p class="amount">${amount} kr</p>
-  <p>Version: ${escapeHtml(String(token.version_number))}</p>
-  <table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Typ</th></tr></thead><tbody>${rows}</tbody></table>
-  <form method="post"><label>Namn</label><input name="name" required>
-  <label>E-post</label><input type="email" name="email" required>
-  <label><input type="checkbox" required style="width:auto"> Jag accepterar offerten och villkoren.</label><br><br>
+  <title>Acceptera offert</title><style>:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17221f;background:#f5f4f0}body{margin:0}.shell{max-width:980px;margin:0 auto;padding:34px 18px 48px}.brand{display:flex;align-items:center;gap:12px;margin-bottom:26px}.mark{width:42px;height:42px;border-radius:10px;background:#d4f36b;display:grid;place-items:center;font-weight:900}.brand span{display:block;color:#69736f;font-size:13px;margin-top:2px}.hero{background:#17221f;color:#fff;border-radius:18px;padding:30px;margin-bottom:18px}.hero small{color:#d4f36b;font-weight:750;letter-spacing:.12em}.hero h1{font-size:38px;line-height:1.05;margin:12px 0 10px}.hero p{color:#ccd5d0;margin:0}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}.tile,.card{background:#fff;border:1px solid #dddcd6;border-radius:14px;padding:18px}.tile span{display:block;color:#6d7671;font-size:12px}.tile strong{font-size:24px;display:block;margin-top:8px}.card{margin-bottom:18px}.card h2{font-size:18px;margin:0 0 12px}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;border-bottom:1px solid #e9e7e0;padding:11px 8px;vertical-align:top}td small{display:block;color:#73807a;margin-top:3px}.note{color:#59645f;line-height:1.55}.accept{display:grid;grid-template-columns:1fr 1fr;gap:12px}.accept label{font-weight:650;font-size:13px}.accept input{width:100%;box-sizing:border-box;padding:12px;margin:7px 0 14px;border:1px solid #cfd1cb;border-radius:9px}.check{grid-column:1/-1;color:#3d4843}.check input{width:auto;margin-right:8px}button{padding:13px 18px;background:#17221f;color:#fff;border:0;border-radius:9px;font-weight:750;cursor:pointer}.fine{color:#6d7671;font-size:12px;line-height:1.5}@media(max-width:760px){.summary,.accept{grid-template-columns:1fr}.hero h1{font-size:30px}table{font-size:12px}}</style></head><body>
+  <main class="shell"><div class="brand"><div class="mark">W</div><div><strong>Webblyftet</strong><span>Finance Test · Offertacceptans</span></div></div>
+  <section class="hero"><small>OFFERT · VERSION ${escapeHtml(String(token.version_number))}</small><h1>${title}</h1><p>Kund: ${customerName} · Giltig till: ${validUntil}</p></section>
+  <section class="summary"><div class="tile"><span>Engångskostnad inkl. moms</span><strong>${money(oneTimeNet + oneTimeVat)}</strong></div><div class="tile"><span>Återkommande per månad inkl. moms</span><strong>${money(recurringMonthlyNet + recurringMonthlyVat)}</strong></div><div class="tile"><span>Total moms engång</span><strong>${money(oneTimeVat)}</strong></div></section>
+  <section class="card"><h2>Engångsposter</h2><table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>${rowsHtml(oneTimeRows) || `<tr><td colspan="6">Inga engångsposter.</td></tr>`}</tbody></table></section>
+  <section class="card"><h2>Abonnemangsposter</h2><table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>${rowsHtml(recurringRows) || `<tr><td colspan="6">Inga abonnemangsposter.</td></tr>`}</tbody></table></section>
+  ${remarks ? `<section class="card"><h2>Kommentar</h2><p class="note">${remarks}</p></section>` : ""}
+  <section class="card"><h2>Acceptera offert</h2><form method="post" class="accept"><div><label>Namn</label><input name="name" required></div>
+  <div><label>E-post</label><input type="email" name="email" required></div>
+  <label class="check"><input type="checkbox" required> Jag accepterar offerten och villkoren.</label>
   <button type="submit">Acceptera offert</button></form>
-  <p><small>Testsignering med audit trail. Detta är inte BankID eller kvalificerad elektronisk signatur.</small></p></div></body></html>`);
+  <p class="fine">Testsignering med audit trail. Detta är inte BankID eller kvalificerad elektronisk signatur.</p></section></main></body></html>`);
 });
 
 app.post("/sign/:token", async (c) => {

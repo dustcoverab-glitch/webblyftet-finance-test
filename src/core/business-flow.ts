@@ -502,7 +502,14 @@ export async function getOfferDetail(env: Env, offerId: string) {
     env.DB.prepare("SELECT * FROM sales_orders WHERE offer_id=? ORDER BY created_at DESC").bind(offerId).all<any>(),
     env.DB.prepare("SELECT * FROM audit_log WHERE entity_type='offer' AND entity_id=? ORDER BY created_at DESC").bind(offerId).all<any>()
   ]);
-  return { ...offer, rows: rows.results, versions: versions.results, acceptances: acceptances.results, orders: orders.results, audit: auditRows.results };
+  const ordersWithStatus = await Promise.all(orders.results.map(async (order: any) => {
+    const [invoices, subscriptions] = await Promise.all([
+      env.DB.prepare("SELECT id,invoice_number,fortnox_document_number,status,total,due_date FROM invoices WHERE sales_order_id=? ORDER BY created_at").bind(order.id).all<any>(),
+      env.DB.prepare("SELECT id,status,stripe_subscription_id,current_period_end FROM subscriptions WHERE sales_order_id=? ORDER BY created_at").bind(order.id).all<any>()
+    ]);
+    return { ...order, invoices: invoices.results, subscriptions: subscriptions.results };
+  }));
+  return { ...offer, rows: rows.results, versions: versions.results, acceptances: acceptances.results, orders: ordersWithStatus, audit: auditRows.results };
 }
 
 export async function getSalesOrder(env: Env, orderId: string) {

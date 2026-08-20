@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Link, NavLink, Route, Routes, useParams } from "react-router-dom";
 import {
   BadgeCheck, BookOpen, Building2, FileCheck2, FileText, Gauge, PlugZap,
-  Package, ReceiptText, RefreshCw, Repeat, Send, Users, WalletCards
+  Package, Plus, ReceiptText, RefreshCw, Repeat, Send, Trash2, Users, WalletCards
 } from "lucide-react";
 import { api, post } from "./api";
 import "./styles.css";
@@ -23,6 +23,10 @@ type Invoice = {
 type Product = {
   id: string; name: string; description: string; product_type: string; active: number; prices: string | any[];
 };
+type ProductPrice = {
+  id: string; amount: number; currency: string; billing_type: "ONE_TIME" | "RECURRING";
+  billing_interval?: "MONTH" | "YEAR" | null; vat_percent?: number; active?: number; stripe_price_id?: string | null;
+};
 type Subscription = {
   id: string; customer_name: string; status: string; monthly_amount: number; current_period_end?: string;
   customer_id?: string; stripe_subscription_id?: string; cancel_at_period_end?: number; items: string | any[];
@@ -39,6 +43,18 @@ type StripePaymentAction = {
   type?: string;
   client_secret?: string | null;
 };
+type OfferEditorRow = {
+  id: string;
+  price_id: string;
+  product_id: string;
+  description: string;
+  quantity: string;
+  unit_price_minor: number;
+  discount_percent: string;
+  vat_percent: string;
+  billing_type: "ONE_TIME" | "RECURRING";
+  billing_interval: "MONTH" | "YEAR" | "";
+};
 
 function money(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString("sv-SE", { style: "currency", currency: "SEK", maximumFractionDigits: 0 });
@@ -52,6 +68,83 @@ function jsonArray(value: string | any[] | null | undefined) {
   if (Array.isArray(value)) return value.filter(Boolean);
   if (!value) return [];
   try { return JSON.parse(value).filter(Boolean); } catch { return []; }
+}
+
+function parseMoneyInputToMinor(value: string | number | null | undefined) {
+  const normalized = String(value ?? "0").replace(",", ".").trim();
+  const match = normalized.match(/^(-?\d+)(?:\.(\d{0,2}))?$/);
+  if (!match) return 0;
+  const whole = Number(match[1]) * 100;
+  const fraction = Number((match[2] ?? "").padEnd(2, "0").slice(0, 2));
+  return whole + (whole < 0 ? -fraction : fraction);
+}
+
+function minorToInput(value: number) {
+  return (value / 100).toFixed(2).replace(/\.00$/, "");
+}
+
+function moneyMinor(value: number | null | undefined) {
+  return cents(value ?? 0);
+}
+
+function newOfferRow(): OfferEditorRow {
+  return {
+    id: crypto.randomUUID(),
+    price_id: "",
+    product_id: "",
+    description: "",
+    quantity: "1",
+    unit_price_minor: 0,
+    discount_percent: "0",
+    vat_percent: "25",
+    billing_type: "ONE_TIME",
+    billing_interval: ""
+  };
+}
+
+function lineNetMinor(row: Pick<OfferEditorRow, "quantity" | "unit_price_minor" | "discount_percent">) {
+  const quantity = Math.max(0, Math.round(Number(row.quantity || 0) * 10000));
+  const discountBasisPoints = Math.max(0, Math.min(10000, Math.round(Number(row.discount_percent || 0) * 100)));
+  const gross = Math.round(row.unit_price_minor * quantity / 10000);
+  return Math.round(gross * (10000 - discountBasisPoints) / 10000);
+}
+
+function lineVatMinor(row: Pick<OfferEditorRow, "quantity" | "unit_price_minor" | "discount_percent" | "vat_percent">) {
+  return Math.round(lineNetMinor(row) * Number(row.vat_percent || 0) / 100);
+}
+
+function offerTotals(rows: OfferEditorRow[]) {
+  const empty = { net: 0, vat: 0, gross: 0 };
+  const totals = {
+    oneTime: { ...empty },
+    recurringMonth: { ...empty },
+    recurringYear: { ...empty },
+    recurringMonthlyEquivalent: { ...empty }
+  };
+  for (const row of rows) {
+    const net = lineNetMinor(row);
+    const vat = lineVatMinor(row);
+    const gross = net + vat;
+    const bucket = row.billing_type === "RECURRING"
+      ? row.billing_interval === "YEAR" ? totals.recurringYear : totals.recurringMonth
+      : totals.oneTime;
+    bucket.net += net; bucket.vat += vat; bucket.gross += gross;
+    if (row.billing_type === "RECURRING") {
+      const divisor = row.billing_interval === "YEAR" ? 12 : 1;
+      totals.recurringMonthlyEquivalent.net += Math.round(net / divisor);
+      totals.recurringMonthlyEquivalent.vat += Math.round(vat / divisor);
+      totals.recurringMonthlyEquivalent.gross += Math.round(gross / divisor);
+    }
+  }
+  return totals;
+}
+
+function productPriceOptions(products: Product[]) {
+  return products.flatMap((product) => jsonArray(product.prices).map((price: ProductPrice) => ({
+    product,
+    price,
+    label: `${product.name} · ${moneyMinor(price.amount)} · ${price.billing_type}${price.billing_interval ? `/${price.billing_interval}` : ""}`
+  })));
 }
 
 async function stripeJs(publishableKey: string) {
@@ -189,29 +282,88 @@ function CustomerDetail() {
 function Offers() {
   const [rows, setRows] = useState<Offer[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [open, setOpen] = useState(false);
-  const load = async () => { setRows(await api("/api/offers")); setCustomers(await api("/api/customers")); };
+  const [editorRows, setEditorRows] = useState<OfferEditorRow[]>([newOfferRow()]);
+  const load = async () => { setRows(await api("/api/offers")); setCustomers(await api("/api/customers")); setProducts(await api("/api/products")); };
   useEffect(() => { load().catch(console.error); }, []);
+  const priceOptions = useMemo(() => productPriceOptions(products), [products]);
+  const totals = useMemo(() => offerTotals(editorRows), [editorRows]);
+  function updateEditorRow(id: string, patch: Partial<OfferEditorRow>) {
+    setEditorRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
+  }
+  function selectPrice(id: string, priceId: string) {
+    const option = priceOptions.find((item) => item.price.id === priceId);
+    if (!option) {
+      updateEditorRow(id, { price_id: "", product_id: "", unit_price_minor: 0, billing_type: "ONE_TIME", billing_interval: "", vat_percent: "25" });
+      return;
+    }
+    updateEditorRow(id, {
+      price_id: option.price.id,
+      product_id: option.product.id,
+      description: option.product.name,
+      unit_price_minor: Number(option.price.amount ?? 0),
+      billing_type: option.price.billing_type,
+      billing_interval: option.price.billing_interval ?? "",
+      vat_percent: String(option.price.vat_percent ?? 25)
+    });
+  }
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault(); const f = new FormData(e.currentTarget);
+    const payloadRows = editorRows.map((row) => ({
+      product_id: row.product_id || null,
+      price_id: row.price_id || null,
+      description: row.description,
+      quantity: Number(row.quantity || 0),
+      unit: "st",
+      unit_price: row.price_id ? undefined : Number(minorToInput(row.unit_price_minor)),
+      discount_percent: Number(row.discount_percent || 0),
+      vat_percent: Number(row.vat_percent || 0),
+      article_number: ""
+    }));
     await post("/api/offers", {
       customer_id: f.get("customer_id"), title: f.get("title"), offer_date: f.get("offer_date"),
       expire_date: f.get("expire_date"), remarks: f.get("remarks"),
-      rows: [{ description: f.get("description"), quantity: Number(f.get("quantity")), unit:"st",
-        unit_price: Number(f.get("unit_price")), discount_percent: Number(f.get("discount_percent") || 0),
-        vat_percent: 25, article_number:"" }]
-    }); setOpen(false); await load();
+      rows: payloadRows
+    }); setOpen(false); setEditorRows([newOfferRow()]); await load();
   }
   return <>
     <PageHead title="Offerter" subtitle="Skapa lokalt, synka till Fortnox, acceptera och konvertera till faktura."
       action={<button onClick={()=>setOpen(!open)}>Ny offert</button>} />
-    {open && <Card><form onSubmit={submit} className="formGrid">
-      <select name="customer_id" required><option value="">Välj kund</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>
-      <input name="title" placeholder="Offerttitel" required/><input type="date" name="offer_date" defaultValue={new Date().toISOString().slice(0,10)} required/>
-      <input type="date" name="expire_date"/><input name="description" placeholder="Tjänst / radbeskrivning" required/>
-      <input name="quantity" type="number" step="0.01" defaultValue="1" required/><input name="unit_price" type="number" step="0.01" placeholder="Pris exkl. moms" required/>
-      <input name="discount_percent" type="number" defaultValue="0" placeholder="Rabatt %"/><input name="remarks" placeholder="Kommentar"/>
-      <button type="submit">Skapa offert</button>
+    {open && <Card className="offerEditor"><form onSubmit={submit}>
+      <div className="formGrid">
+        <select name="customer_id" required><option value="">Välj kund</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <input name="title" placeholder="Offerttitel" required/>
+        <input type="date" name="offer_date" defaultValue={new Date().toISOString().slice(0,10)} required/>
+        <input type="date" name="expire_date"/>
+      </div>
+      <div className="offerRows">
+        <div className="offerRow offerRowHead"><span>Produkt/pris eller fri rad</span><span>Beskrivning</span><span>Antal</span><span>Pris exkl. moms</span><span>Rabatt</span><span>Moms</span><span>Typ</span><span>Radtotal</span><span></span></div>
+        {editorRows.map((row) => <div className="offerRow" key={row.id}>
+          <select value={row.price_id} onChange={(event)=>selectPrice(row.id, event.target.value)}>
+            <option value="">Fri rad</option>
+            {priceOptions.map((option) => <option key={option.price.id} value={option.price.id}>{option.label}</option>)}
+          </select>
+          <input value={row.description} onChange={(event)=>updateEditorRow(row.id, { description: event.target.value })} placeholder="Radbeskrivning" required/>
+          <input value={row.quantity} onChange={(event)=>updateEditorRow(row.id, { quantity: event.target.value })} type="number" min="0.01" step="0.01" required/>
+          <input value={minorToInput(row.unit_price_minor)} onChange={(event)=>updateEditorRow(row.id, { unit_price_minor: parseMoneyInputToMinor(event.target.value) })} type="number" min="0" step="0.01" disabled={Boolean(row.price_id)} required/>
+          <input value={row.discount_percent} onChange={(event)=>updateEditorRow(row.id, { discount_percent: event.target.value })} type="number" min="0" max="100" step="0.01"/>
+          <input value={row.vat_percent} onChange={(event)=>updateEditorRow(row.id, { vat_percent: event.target.value })} type="number" min="0" max="100" step="0.01"/>
+          <div className="rowType"><Status value={row.billing_type}/>{row.billing_interval && <small>{row.billing_interval}</small>}</div>
+          <strong>{moneyMinor(lineNetMinor(row) + lineVatMinor(row))}</strong>
+          <button type="button" className="small ghost iconOnly" title="Ta bort rad" onClick={()=>setEditorRows((current)=>current.length === 1 ? [newOfferRow()] : current.filter((item)=>item.id !== row.id))}><Trash2 size={15}/></button>
+        </div>)}
+      </div>
+      <div className="offerEditorFoot">
+        <button type="button" className="ghost" onClick={()=>setEditorRows((current)=>[...current, newOfferRow()])}><Plus size={16}/>Lägg till rad</button>
+        <input name="remarks" placeholder="Kommentar till offerten"/>
+        <button type="submit">Skapa offert</button>
+      </div>
+      <div className="totalsGrid">
+        <div className="totalTile"><span>Subtotal engång</span><strong>{moneyMinor(totals.oneTime.net)}</strong><small>Moms {moneyMinor(totals.oneTime.vat)}</small><b>{moneyMinor(totals.oneTime.gross)}</b></div>
+        <div className="totalTile"><span>Återkommande / mån</span><strong>{moneyMinor(totals.recurringMonthlyEquivalent.net)}</strong><small>Moms {moneyMinor(totals.recurringMonthlyEquivalent.vat)}</small><b>{moneyMinor(totals.recurringMonthlyEquivalent.gross)}</b></div>
+        <div className="totalTile"><span>Årspris återkommande</span><strong>{moneyMinor(totals.recurringMonth.gross * 12 + totals.recurringYear.gross)}</strong><small>Månadsrader annualiserade plus årsintervall</small></div>
+      </div>
     </form></Card>}
     <Card><table><thead><tr><th>Offert</th><th>Kund</th><th>Belopp</th><th>Status</th><th>Fortnox</th><th>Åtgärder</th></tr></thead><tbody>
       {rows.map(r=><tr key={r.id}><td><strong>{r.title || "Offert"}</strong><small>{r.offer_date}</small></td><td>{r.customer_name}</td>
@@ -232,17 +384,61 @@ function OfferDetail() {
   const load = () => api<any>(`/api/offers/${id}`).then(setOffer);
   useEffect(() => { load().catch(console.error); }, [id]);
   if (!offer) return <div>Hämtar…</div>;
+  const detailRows = offer.rows.map((row: any) => ({
+    ...row,
+    unit_price_minor: parseMoneyInputToMinor(row.unit_price),
+    quantity: String(row.quantity),
+    discount_percent: String(row.discount_percent ?? 0),
+    vat_percent: String(row.vat_percent ?? 25),
+    billing_type: row.billing_type ?? "ONE_TIME",
+    billing_interval: row.billing_interval ?? ""
+  })) as OfferEditorRow[];
+  const oneTimeRows = detailRows.filter((row) => row.billing_type === "ONE_TIME");
+  const recurringRows = detailRows.filter((row) => row.billing_type === "RECURRING");
+  const totals = offerTotals(detailRows);
+  const latestOrder = offer.orders?.[0];
+  const latestAcceptance = offer.acceptances?.[0];
   return <>
     <PageHead title={offer.title || "Offert"} subtitle={`${offer.customer_name} · ${offer.status}`}
       action={<button onClick={async()=>{const d:any=await post(`/api/offers/${offer.id}/sign-link`); await navigator.clipboard.writeText(d.url); await load(); alert("Signeringslänk kopierad");}}>Skapa acceptlänk</button>} />
-    <Card><table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Typ</th></tr></thead><tbody>{offer.rows.map((r:any)=>
-      <tr key={r.id}><td>{r.description}<small>{r.product_id || ""}</small></td><td>{r.quantity}</td><td>{money(r.unit_price)}</td><td>{r.billing_type}{r.billing_interval ? ` / ${r.billing_interval}` : ""}</td></tr>)}</tbody></table></Card>
+    <div className="metricGrid">
+      <Card><span>Engångskostnad</span><strong>{moneyMinor(totals.oneTime.gross)}</strong><small>exkl. moms {moneyMinor(totals.oneTime.net)}</small></Card>
+      <Card><span>Återkommande / mån</span><strong>{moneyMinor(totals.recurringMonthlyEquivalent.gross)}</strong><small>månads-ekvivalent inkl. moms</small></Card>
+      <Card><span>Acceptans</span><strong>{latestAcceptance ? "Accepterad" : offer.status}</strong><small>{offer.accepted_by_email || "Ingen acceptans ännu"}</small></Card>
+      <Card><span>Order</span><strong>{latestOrder?.status ?? "Ej skapad"}</strong><small>{latestOrder?.id ?? "Skapas vid acceptans"}</small></Card>
+    </div>
+    <div className="twoCol">
+      <Card><h3>Engångsposter</h3><OfferRowsTable rows={oneTimeRows}/></Card>
+      <Card><h3>Abonnemangsposter</h3><OfferRowsTable rows={recurringRows}/></Card>
+    </div>
+    <div className="twoCol">
+      <Card><h3>Totals</h3><div className="summaryList">
+        <div><span>Engång subtotal</span><strong>{moneyMinor(totals.oneTime.net)}</strong></div>
+        <div><span>Engång moms</span><strong>{moneyMinor(totals.oneTime.vat)}</strong></div>
+        <div><span>Engång total</span><strong>{moneyMinor(totals.oneTime.gross)}</strong></div>
+        <div><span>Återkommande per månad</span><strong>{moneyMinor(totals.recurringMonthlyEquivalent.gross)}</strong></div>
+        <div><span>Återkommande årspris</span><strong>{moneyMinor(totals.recurringMonth.gross * 12 + totals.recurringYear.gross)}</strong></div>
+      </div></Card>
+      <Card><h3>Statuskedja</h3><div className="summaryList">
+        <div><span>Offert</span><Status value={offer.status}/></div>
+        <div><span>Acceptans</span><Status value={latestAcceptance ? "ACCEPTED" : "PENDING"}/></div>
+        <div><span>Sales order</span><Status value={latestOrder?.status ?? "PENDING"}/></div>
+        <div><span>Faktura</span><Status value={latestOrder?.invoices?.[0]?.status ?? "PENDING"}/></div>
+        <div><span>Subscription</span><Status value={latestOrder?.subscriptions?.[0]?.status ?? "PENDING"}/></div>
+      </div></Card>
+    </div>
     <div className="twoCol">
       <Card><h3>Versioner</h3><div className="logList">{offer.versions.map((v:any)=><div key={v.id}><span>Version {v.version_number}</span><strong>{cents(v.total)}</strong></div>)}</div></Card>
-      <Card><h3>Order</h3><div className="logList">{offer.orders.map((o:any)=><div key={o.id}><span>{o.id}</span><Status value={o.status}/></div>)}</div></Card>
+      <Card><h3>Orderhistorik</h3><div className="logList">{offer.orders.map((o:any)=><div key={o.id}><span>{o.id}</span><Status value={o.status}/></div>)}</div></Card>
     </div>
     <Card><h3>Audit</h3><div className="logList">{offer.audit.map((a:any)=><div key={a.id}><span>{a.action}</span><small>{a.created_at}</small></div>)}</div></Card>
   </>;
+}
+
+function OfferRowsTable({ rows }: { rows: OfferEditorRow[] }) {
+  if (!rows.length) return <p className="muted">Inga rader.</p>;
+  return <table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>{rows.map((r:any)=>
+    <tr key={r.id}><td>{r.description}<small>{r.product_id || "Fri rad"}</small></td><td>{r.quantity}</td><td>{moneyMinor(r.unit_price_minor)}</td><td>{r.discount_percent}%</td><td>{r.vat_percent}%</td><td><strong>{moneyMinor(lineNetMinor(r) + lineVatMinor(r))}</strong><small>{r.billing_interval || r.billing_type}</small></td></tr>)}</tbody></table>;
 }
 
 function Invoices() {
