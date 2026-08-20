@@ -262,32 +262,48 @@ async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, statu
     ? intent.metadata.webblyftet_customer_id
     : null;
   if (!customerId) return;
+  const recurringInvoiceId = paymentIntentInvoiceId(intent);
+  const localSubscriptionId = typeof intent.metadata?.webblyftet_subscription_id === "string"
+    ? intent.metadata.webblyftet_subscription_id
+    : null;
+  const stripeSubscriptionId = typeof intent.metadata?.stripe_subscription_id === "string"
+    ? intent.metadata.stripe_subscription_id
+    : null;
+  const subscription = localSubscriptionId
+    ? await one<any>(env.DB, "SELECT * FROM subscriptions WHERE id=?", localSubscriptionId)
+    : stripeSubscriptionId
+      ? await one<any>(env.DB, "SELECT * FROM subscriptions WHERE stripe_subscription_id=?", stripeSubscriptionId)
+      : null;
+  const isRecurringDiagnostic = Boolean(recurringInvoiceId || subscription);
   let payment = await upsertPayment(env, {
     customer_id: customerId,
+    subscription_id: subscription?.id ?? null,
     amount: intent.amount_received || intent.amount,
     currency: intent.currency.toUpperCase(),
     status,
     provider: "STRIPE",
-    provider_payment_id: intent.id,
+    provider_payment_id: recurringInvoiceId ?? intent.id,
     paid_at: status === "SUCCEEDED" ? new Date((intent.created ?? Math.floor(Date.now() / 1000)) * 1000).toISOString() : null
   });
   if (status === "SUCCEEDED" && payment?.status === "FAILED") {
     await upsertPayment(env, {
       customer_id: customerId,
+      subscription_id: subscription?.id ?? null,
       amount: intent.amount_received || intent.amount,
       currency: intent.currency.toUpperCase(),
       status: "PROCESSING",
       provider: "STRIPE",
-      provider_payment_id: intent.id,
+      provider_payment_id: recurringInvoiceId ?? intent.id,
       paid_at: null
     });
     payment = await upsertPayment(env, {
       customer_id: customerId,
+      subscription_id: subscription?.id ?? null,
       amount: intent.amount_received || intent.amount,
       currency: intent.currency.toUpperCase(),
       status: "SUCCEEDED",
       provider: "STRIPE",
-      provider_payment_id: intent.id,
+      provider_payment_id: recurringInvoiceId ?? intent.id,
       paid_at: new Date((intent.created ?? Math.floor(Date.now() / 1000)) * 1000).toISOString()
     });
   }
@@ -296,8 +312,13 @@ async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, statu
     provider: "STRIPE",
     provider_attempt_id: intent.latest_charge?.toString() ?? `${intent.id}:${status}`,
     status,
-    payload_json: { stripe_payment_intent_id: intent.id }
+    payload_json: {
+      stripe_payment_intent_id: intent.id,
+      stripe_invoice_id: recurringInvoiceId,
+      recurring_diagnostic_only: isRecurringDiagnostic
+    }
   });
+  if (isRecurringDiagnostic) return;
   if (payment?.status === "SUCCEEDED") {
     const gross = intent.amount_received || intent.amount;
     await createAccountingEvent(env, {
@@ -393,4 +414,14 @@ function stripeInvoicePaymentIntentId(invoice: Stripe.Invoice): string | null {
   const raw = invoice as unknown as { payment_intent?: string | { id?: string } | null };
   if (typeof raw.payment_intent === "string") return raw.payment_intent;
   return raw.payment_intent?.id ?? null;
+}
+
+function paymentIntentInvoiceId(intent: Stripe.PaymentIntent): string | null {
+  const raw = intent as unknown as {
+    invoice?: string | { id?: string } | null;
+    metadata?: Record<string, string | undefined>;
+  };
+  if (typeof raw.invoice === "string") return raw.invoice;
+  if (raw.invoice?.id) return raw.invoice.id;
+  return raw.metadata?.stripe_invoice_id ?? null;
 }

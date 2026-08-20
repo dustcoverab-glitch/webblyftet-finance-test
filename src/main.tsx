@@ -18,7 +18,7 @@ type Offer = {
 };
 type Invoice = {
   id: string; customer_name: string; total: number; balance?: number; status: string;
-  fortnox_document_number?: string; due_date?: string;
+  fortnox_document_number?: string; due_date?: string; invoice_type?: string;
 };
 type Product = {
   id: string; name: string; description: string; product_type: string; active: number; prices: string | any[];
@@ -157,7 +157,7 @@ function CustomerDetail() {
       <Card><h3>Abonnemang</h3><table><tbody>{data.subscriptions.map((s:any)=><tr key={s.id}><td>{s.id}<small>{s.stripe_subscription_id || "Ej Stripe-aktiverad"}</small></td><td><Status value={s.status}/></td><td><button className="small" onClick={async()=>{await post(`/api/subscriptions/${s.id}/activate`); await load();}}>Aktivera</button></td></tr>)}</tbody></table></Card>
       <Card><h3>Audit</h3><div className="logList">{data.audit.map((a:any)=><div key={a.id}><span>{a.action}</span><small>{a.created_at}</small></div>)}</div></Card>
     </div>
-    <Card><h3>Fakturor</h3><table><tbody>{data.invoices.map((inv:any)=><tr key={inv.id}><td>{inv.invoice_number || inv.fortnox_document_number || inv.id}</td><td>{money(inv.total)}</td><td><Status value={inv.status}/></td><td>{!inv.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/invoices/${inv.id}/sync-fortnox`); await load();}}>Sync Fortnox</button>}</td></tr>)}</tbody></table></Card>
+    <Card><h3>Fakturor</h3><table><tbody>{data.invoices.map((inv:any)=><tr key={inv.id}><td>{inv.invoice_number || inv.fortnox_document_number || inv.id}<small>{inv.invoice_type || "PROJECT_INVOICE"}</small></td><td>{money(inv.total)}</td><td><Status value={inv.status}/></td><td>{!inv.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/invoices/${inv.id}/sync-fortnox`); await load();}}>Sync Fortnox</button>}</td></tr>)}</tbody></table></Card>
   </>;
 }
 
@@ -227,8 +227,8 @@ function Invoices() {
   return <>
     <PageHead title="Fakturor" subtitle="Fortnox är system of record. Status speglas tillbaka hit."
       action={<button className="ghost" onClick={async()=>{await post("/api/invoices/pull"); await load();}}><RefreshCw size={16}/>Synka fakturor</button>}/>
-    <Card><table><thead><tr><th>#</th><th>Kund</th><th>Belopp</th><th>Saldo</th><th>Förfallo</th><th>Status</th></tr></thead><tbody>
-      {rows.map(r=><tr key={r.id}><td>{r.fortnox_document_number||"—"}</td><td>{r.customer_name}</td><td>{money(r.total)}</td><td>{money(r.balance)}</td><td>{r.due_date||"—"}</td><td><Status value={r.status}/></td></tr>)}
+    <Card><table><thead><tr><th>#</th><th>Typ</th><th>Kund</th><th>Belopp</th><th>Saldo</th><th>Förfallo</th><th>Status</th></tr></thead><tbody>
+      {rows.map(r=><tr key={r.id}><td>{r.fortnox_document_number||"—"}</td><td>{r.invoice_type || "PROJECT_INVOICE"}</td><td>{r.customer_name}</td><td>{money(r.total)}</td><td>{money(r.balance)}</td><td>{r.due_date||"—"}</td><td><Status value={r.status}/></td></tr>)}
     </tbody></table></Card>
   </>;
 }
@@ -339,16 +339,29 @@ function Products() {
 
 function Subscriptions() {
   const [rows, setRows] = useState<Subscription[]>([]);
+  const [error, setError] = useState<{ customerId?: string; message: string } | null>(null);
   const load = () => api<Subscription[]>("/api/subscriptions").then(setRows);
   useEffect(() => { load().catch(console.error); }, []);
+  async function activate(row: Subscription) {
+    setError(null);
+    try {
+      await post(`/api/subscriptions/${row.id}/activate`);
+      await load();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Kunde inte aktivera abonnemanget.";
+      setError({ customerId: row.customer_id, message });
+    }
+  }
   return <>
     <PageHead title="Abonnemang" subtitle="Core-vy för subscriptions, items och Stripe-status. Ingen checkout ännu."/>
-    <Card><table><thead><tr><th>Kund</th><th>Status</th><th>Produkter/items</th><th>Månadsbelopp</th><th>Nästa periodslut</th><th>Stripe-status</th></tr></thead><tbody>
+    {error && <Card><p><strong>{error.message.includes("betalmetod") || error.message.includes("Betalmetod") ? "Betalmetod saknas" : error.message}</strong></p>
+      {error.customerId && <Link className="button" to={`/payment-method/${error.customerId}`}>Registrera kort</Link>}</Card>}
+    <Card><table><thead><tr><th>Kund</th><th>Status</th><th>Produkter/items</th><th>Månadsbelopp</th><th>Nästa periodslut</th><th>Stripe-status</th><th>Åtgärder</th></tr></thead><tbody>
       {rows.map((r) => <tr key={r.id}><td>{r.customer_name}</td><td><Status value={r.status}/></td>
         <td>{jsonArray(r.items).map((item:any, index:number) => <div key={index}>{item.product_name} × {item.quantity}<small>{cents(item.unit_amount)} {item.billing_interval || ""}</small></div>)}</td>
         <td>{cents(r.monthly_amount)}</td><td>{r.current_period_end || "—"}</td><td>{r.stripe_subscription_id ? "Kopplad" : "Ej skapad"}</td>
         <td><div className="rowActions">{r.customer_id && <Link className="button small ghost" to={`/payment-method/${r.customer_id}`}>Kort</Link>}
-          <button className="small" onClick={async()=>{await post(`/api/subscriptions/${r.id}/activate`); await load();}}>Aktivera</button>
+          <button className="small" onClick={()=>activate(r)}>Aktivera</button>
           {r.stripe_subscription_id && !r.cancel_at_period_end && <button className="small ghost" onClick={async()=>{await post(`/api/subscriptions/${r.id}/cancel`); await load();}}>Avsluta periodslut</button>}</div></td></tr>)}
     </tbody></table></Card>
   </>;

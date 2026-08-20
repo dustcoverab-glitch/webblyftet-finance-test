@@ -194,6 +194,82 @@ describe("Stripe integration foundation", () => {
     expect(session?.status).toBe("REQUIRES_ACTION");
   });
 
+  it("reuses active SetupIntent sessions for requires_action and processing, but creates a new one after expiry", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name,stripe_customer_id) VALUES (?,?,?)")
+      .bind("cus_setup_reuse", "Acme AB", "cus_stripe_reuse")
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO payment_method_setup_sessions(id,customer_id,stripe_customer_id,stripe_setup_intent_id,status,expires_at)
+       VALUES (?,?,?,?,?,?)`
+    ).bind("pmsetup_action", "cus_setup_reuse", "cus_stripe_reuse", "seti_action", "REQUIRES_ACTION", "2099-01-01T00:00:00.000Z").run();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      const id = url.includes("seti_processing") ? "seti_processing" : method === "POST" ? "seti_created_after_expiry" : "seti_action";
+      const status = id === "seti_processing" ? "processing" : id === "seti_action" ? "requires_action" : "requires_payment_method";
+      return new Response(JSON.stringify({
+        id,
+        object: "setup_intent",
+        client_secret: `${id}_secret`,
+        status
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json", "request-id": "req_test" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const action = await createPaymentMethodSetupIntent(workerEnv(), "cus_setup_reuse");
+    expect(action).toMatchObject({ setup_session_id: "pmsetup_action", setup_intent_id: "seti_action", reused: true });
+
+    await env.DB.prepare("UPDATE payment_method_setup_sessions SET status='PROCESSING', stripe_setup_intent_id=? WHERE id=?")
+      .bind("seti_processing", "pmsetup_action")
+      .run();
+    const processing = await createPaymentMethodSetupIntent(workerEnv(), "cus_setup_reuse");
+    expect(processing).toMatchObject({ setup_session_id: "pmsetup_action", setup_intent_id: "seti_processing", reused: true });
+
+    await env.DB.prepare("UPDATE payment_method_setup_sessions SET expires_at=? WHERE id=?")
+      .bind("2020-01-01T00:00:00.000Z", "pmsetup_action")
+      .run();
+    const fresh = await createPaymentMethodSetupIntent(workerEnv(), "cus_setup_reuse");
+    expect(fresh.setup_session_id).not.toBe("pmsetup_action");
+    expect(fresh).toMatchObject({ setup_intent_id: "seti_created_after_expiry", reused: false });
+  });
+
+  it("payment-method setup endpoint ensures Stripe Customer before creating SetupIntent", async () => {
+    await env.DB.prepare("INSERT INTO customers(id,name,email) VALUES (?,?,?)")
+      .bind("cus_setup_page", "Acme AB", "buyer@example.com")
+      .run();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("/v1/customers")
+        ? { id: "cus_created_by_setup", object: "customer" }
+        : {
+            id: "seti_page",
+            object: "setup_intent",
+            client_secret: "seti_page_secret",
+            status: "requires_payment_method"
+          };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json", "request-id": "req_test" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(new Request("https://finance.example/api/customers/cus_setup_page/payment-method/setup", {
+      method: "POST"
+    }), workerEnv(), {} as ExecutionContext);
+    const body = await response.json<any>();
+    const customer = await env.DB.prepare("SELECT stripe_customer_id FROM customers WHERE id=?")
+      .bind("cus_setup_page")
+      .first<{ stripe_customer_id: string }>();
+
+    expect(response.status).toBe(200);
+    expect(body.setup_intent_id).toBe("seti_page");
+    expect(customer?.stripe_customer_id).toBe("cus_created_by_setup");
+  });
+
   it("moves a failed PaymentIntent to succeeded on a later verified succeeded event and ignores a late failure", async () => {
     await env.DB.prepare("INSERT INTO customers(id,name) VALUES (?,?)").bind("cus_test", "Acme AB").run();
 

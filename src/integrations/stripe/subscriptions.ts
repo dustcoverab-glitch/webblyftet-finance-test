@@ -1,9 +1,20 @@
 import { id, one } from "../../lib/db";
 import { PublicAppError } from "../../lib/app-error";
 import { stripeClient } from "./client";
+import { createOrReuseStripeCustomer } from "./customers";
 import type { StripeSetupIntentResult } from "./types";
+import { audit } from "../../core/finance";
+
+const activeSetupIntentStatuses = [
+  "CREATED",
+  "REQUIRES_PAYMENT_METHOD",
+  "REQUIRES_CONFIRMATION",
+  "REQUIRES_ACTION",
+  "PROCESSING"
+] as const;
 
 export async function createPaymentMethodSetupIntent(env: Env, customerId: string): Promise<StripeSetupIntentResult> {
+  await createOrReuseStripeCustomer(env, customerId);
   const customer = await one<any>(env.DB, "SELECT id,stripe_customer_id FROM customers WHERE id=?", customerId);
   if (!customer) throw new PublicAppError(404, "Kunden hittades inte.");
   if (!customer.stripe_customer_id) throw new PublicAppError(409, "Kunden saknar Stripe Customer.");
@@ -13,10 +24,11 @@ export async function createPaymentMethodSetupIntent(env: Env, customerId: strin
   const existing = await one<any>(
     env.DB,
     `SELECT * FROM payment_method_setup_sessions
-     WHERE customer_id=? AND status IN ('CREATED','REQUIRES_PAYMENT_METHOD') AND expires_at > ?
+     WHERE customer_id=? AND status IN (${activeSetupIntentStatuses.map(() => "?").join(",")}) AND expires_at > ?
      ORDER BY created_at DESC
      LIMIT 1`,
     customer.id,
+    ...activeSetupIntentStatuses,
     nowIso
   );
   const stripe = stripeClient(env);
@@ -136,6 +148,7 @@ export async function activateStripeSubscription(env: Env, subscriptionId: strin
   if (!subscription) throw new PublicAppError(404, "Abonnemanget hittades inte.");
   if (subscription.stripe_subscription_id) return { stripe_subscription_id: subscription.stripe_subscription_id, reused: true };
   if (!["PENDING", "DRAFT"].includes(subscription.status)) throw new PublicAppError(409, "Abonnemanget kan inte aktiveras i nuvarande status.");
+  await createOrReuseStripeCustomer(env, subscription.customer_id);
   const customer = await one<any>(env.DB, "SELECT * FROM customers WHERE id=?", subscription.customer_id);
   if (!customer?.stripe_customer_id) throw new PublicAppError(409, "Kunden saknar Stripe Customer.");
   const paymentMethod = await one<any>(
@@ -173,6 +186,10 @@ export async function activateStripeSubscription(env: Env, subscriptionId: strin
   await env.DB.prepare(
     "UPDATE subscriptions SET stripe_customer_id=?, stripe_subscription_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(customer.stripe_customer_id, result.id, subscription.id).run();
+  await audit(env, "STRIPE", null, "SUBSCRIPTION_ACTIVATION_REQUESTED", "subscription", subscription.id, subscription, {
+    stripe_subscription_id: result.id,
+    status: result.status
+  });
   return { stripe_subscription_id: result.id, reused: false, status: result.status };
 }
 
@@ -189,6 +206,10 @@ export async function cancelStripeSubscriptionAtPeriodEnd(env: Env, subscription
   await env.DB.prepare("UPDATE subscriptions SET cancel_at_period_end=1, updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .bind(subscription.id)
     .run();
+  await audit(env, "STRIPE", null, "SUBSCRIPTION_CANCEL_AT_PERIOD_END_REQUESTED", "subscription", subscription.id, subscription, {
+    stripe_subscription_id: result.id,
+    cancel_at_period_end: result.cancel_at_period_end
+  });
   return { stripe_subscription_id: result.id, cancel_at_period_end: result.cancel_at_period_end };
 }
 

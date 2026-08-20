@@ -215,12 +215,12 @@ export async function createOfferAcceptanceToken(env: Env, offerId: string) {
   const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
   const tokenHash = await sha256Hex(token);
   await env.DB.prepare(
-    "UPDATE offer_acceptance_tokens SET used_at=CURRENT_TIMESTAMP WHERE offer_id=? AND used_at IS NULL"
+    "UPDATE offer_acceptance_tokens SET status='CANCELLED', used_at=CURRENT_TIMESTAMP WHERE offer_id=? AND status IN ('ACTIVE','PROCESSING')"
   ).bind(offerId).run();
   const tokenId = id("otkn");
   await env.DB.prepare(
-    `INSERT INTO offer_acceptance_tokens(id,offer_id,offer_version_id,token_hash,expires_at)
-     VALUES (?,?,?,?,?)`
+    `INSERT INTO offer_acceptance_tokens(id,offer_id,offer_version_id,token_hash,expires_at,status)
+     VALUES (?,?,?,?,?,'ACTIVE')`
   ).bind(tokenId, offerId, version!.id, tokenHash, new Date(Date.now() + 14 * 24 * 60 * 60_000).toISOString()).run();
   await env.DB.prepare("UPDATE offers SET status='SENT', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(offerId).run();
   await audit(env, "OFFER_ACCEPTANCE_LINK_CREATED", "offer", offerId, null, { offer_version_id: version!.id });
@@ -236,7 +236,7 @@ export async function getOfferForToken(env: Env, token: string) {
      WHERE t.token_hash=?`,
     tokenHash
   );
-  if (!row || row.used_at || new Date(row.expires_at).getTime() <= Date.now()) return null;
+  if (!row || row.status !== "ACTIVE" || row.used_at || new Date(row.expires_at).getTime() <= Date.now()) return null;
   return { ...row, snapshot: JSON.parse(row.snapshot_json) };
 }
 
@@ -257,27 +257,35 @@ export async function acceptOfferToken(env: Env, input: {
      WHERE t.token_hash=?`,
     tokenHash
   );
-  if (!token || token.used_at || new Date(token.expires_at).getTime() <= Date.now()) {
+  if (!token || token.status === "USED" || token.status === "CANCELLED" || token.used_at || new Date(token.expires_at).getTime() <= Date.now()) {
+    if (token && token.status !== "USED" && new Date(token.expires_at).getTime() <= Date.now()) {
+      await env.DB.prepare("UPDATE offer_acceptance_tokens SET status='EXPIRED' WHERE id=? AND status!='USED'").bind(token.id).run();
+    }
     throw new PublicAppError(404, "Ogiltig eller utgången offertlänk.");
   }
   const latest = await one<{ id: string }>(
     env.DB,
     `SELECT offer_version_id id FROM offer_acceptance_tokens
-     WHERE offer_id=? AND used_at IS NULL
+     WHERE offer_id=? AND status IN ('ACTIVE','PROCESSING')
      ORDER BY created_at DESC LIMIT 1`,
     token.offer_id
   );
   if (latest?.id !== token.offer_version_id) throw new PublicAppError(409, "Offertlänken har ersatts av en nyare version.");
 
-  const claim = await env.DB.prepare(
-    "UPDATE offer_acceptance_tokens SET used_at=CURRENT_TIMESTAMP WHERE id=? AND used_at IS NULL"
-  ).bind(token.id).run();
-  if ((claim.meta.changes ?? 0) !== 1) throw new PublicAppError(409, "Offertlänken är redan använd.");
+  if (token.status === "ACTIVE") {
+    const claim = await env.DB.prepare(
+      "UPDATE offer_acceptance_tokens SET status='PROCESSING' WHERE id=? AND status='ACTIVE'"
+    ).bind(token.id).run();
+    if ((claim.meta.changes ?? 0) !== 1) {
+      const claimed = await one<any>(env.DB, "SELECT status FROM offer_acceptance_tokens WHERE id=?", token.id);
+      if (claimed?.status !== "PROCESSING") throw new PublicAppError(409, "Offertlänken är redan använd.");
+    }
+  }
 
   const snapshotHash = await sha256Hex(token.snapshot_json);
   const acceptanceId = id("oacc");
   await env.DB.prepare(
-    `INSERT INTO offer_acceptances
+    `INSERT OR IGNORE INTO offer_acceptances
       (id,offer_id,offer_version_id,customer_id,accepted_by_name,accepted_by_email,accepted_at,ip_address,user_agent,snapshot_hash,metadata_json)
      VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)`
   ).bind(
@@ -292,17 +300,22 @@ export async function acceptOfferToken(env: Env, input: {
     snapshotHash,
     JSON.stringify({ version_number: token.version_number })
   ).run();
+  const acceptance = await one<any>(env.DB, "SELECT * FROM offer_acceptances WHERE offer_version_id=?", token.offer_version_id);
+  if (!acceptance) throw new PublicAppError(500, "Offertacceptans kunde inte sparas.");
   await env.DB.prepare(
     `UPDATE offers SET status='ACCEPTED', accepted_at=CURRENT_TIMESTAMP, accepted_by_name=?, accepted_by_email=?,
      acceptance_ip=?, acceptance_user_agent=?, signature_token_hash=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`
   ).bind(input.accepted_by_name, input.accepted_by_email, input.ip_address ?? "", input.user_agent ?? "", token.offer_id).run();
-  await audit(env, "OFFER_ACCEPTED", "offer", token.offer_id, null, { acceptance_id: acceptanceId, offer_version_id: token.offer_version_id });
-  return createSalesOrderFromAcceptance(env, acceptanceId);
+  await env.DB.prepare("UPDATE offer_acceptance_tokens SET status='USED', used_at=CURRENT_TIMESTAMP WHERE id=?").bind(token.id).run();
+  await audit(env, "OFFER_ACCEPTED", "offer", token.offer_id, null, { acceptance_id: acceptance.id, offer_version_id: token.offer_version_id });
+  return createSalesOrderFromAcceptance(env, acceptance.id);
 }
 
 export async function createSalesOrderFromAcceptance(env: Env, acceptanceId: string) {
-  const existing = await one<any>(env.DB, "SELECT * FROM sales_orders WHERE acceptance_id=?", acceptanceId);
-  if (existing) return getSalesOrder(env, existing.id);
+  return ensureSalesOrderFromAcceptance(env, acceptanceId);
+}
+
+export async function ensureSalesOrderFromAcceptance(env: Env, acceptanceId: string) {
   const acceptance = await one<any>(
     env.DB,
     `SELECT a.*, v.snapshot_json FROM offer_acceptances a JOIN offer_versions v ON v.id=a.offer_version_id WHERE a.id=?`,
@@ -310,7 +323,7 @@ export async function createSalesOrderFromAcceptance(env: Env, acceptanceId: str
   );
   if (!acceptance) throw new PublicAppError(404, "Acceptance saknas.");
   const snapshot = JSON.parse(acceptance.snapshot_json) as { rows: SnapshotRow[]; offer: any; totals: any };
-  const orderId = id("sord");
+  const existing = await one<any>(env.DB, "SELECT * FROM sales_orders WHERE acceptance_id=?", acceptanceId);
   const oneTimeRows = snapshot.rows.filter((row) => row.billing_type === "ONE_TIME");
   const recurringRows = snapshot.rows.filter((row) => row.billing_type === "RECURRING");
   const oneTimeTotal = calculateMinor(oneTimeRows).total;
@@ -319,26 +332,68 @@ export async function createSalesOrderFromAcceptance(env: Env, acceptanceId: str
     quantity: row.quantity,
     billing_interval: row.billing_interval
   })));
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO sales_orders(id,offer_id,offer_version_id,acceptance_id,customer_id,currency,one_time_total_minor,recurring_monthly_minor)
-       VALUES (?,?,?,?,?,?,?,?)`
-    ).bind(orderId, acceptance.offer_id, acceptance.offer_version_id, acceptance.id, acceptance.customer_id, snapshot.offer.currency ?? "SEK", oneTimeTotal, recurringMonthly),
-    ...snapshot.rows.map((row) => env.DB.prepare(
+  const orderId = existing?.id ?? id("sord");
+  if (!existing) {
+    await env.DB.prepare(
+      `INSERT INTO sales_orders(id,offer_id,offer_version_id,acceptance_id,customer_id,status,currency,one_time_total_minor,recurring_monthly_minor)
+       VALUES (?,?,?,?,?,'PROVISIONING',?,?,?)`
+    ).bind(orderId, acceptance.offer_id, acceptance.offer_version_id, acceptance.id, acceptance.customer_id, snapshot.offer.currency ?? "SEK", oneTimeTotal, recurringMonthly).run();
+    await audit(env, "SALES_ORDER_CREATED", "sales_order", orderId, null, { acceptance_id: acceptanceId });
+  } else {
+    await env.DB.prepare(
+      `UPDATE sales_orders
+       SET status='PROVISIONING', one_time_total_minor=?, recurring_monthly_minor=?, updated_at=CURRENT_TIMESTAMP
+       WHERE id=?`
+    ).bind(oneTimeTotal, recurringMonthly, orderId).run();
+  }
+  try {
+    await ensureOrderItems(env, orderId, snapshot.rows);
+    const invoice = oneTimeRows.length ? await createInternalInvoiceFromSalesOrder(env, orderId) : null;
+    if (invoice) await ensureInvoiceAccountingEvent(env, invoice.id);
+    if (recurringRows.length) await createPendingSubscriptionFromSalesOrder(env, orderId);
+    await env.DB.prepare("UPDATE sales_orders SET status='READY', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(orderId).run();
+  } catch (error) {
+    await env.DB.prepare("UPDATE sales_orders SET status='PARTIAL_FAILURE', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(orderId).run();
+    throw error;
+  }
+  return getSalesOrder(env, orderId);
+}
+
+export async function ensureOrderItems(env: Env, salesOrderId: string, snapshotRows?: SnapshotRow[]) {
+  let rows = snapshotRows;
+  if (!rows) {
+    const order = await one<any>(env.DB, "SELECT acceptance_id FROM sales_orders WHERE id=?", salesOrderId);
+    if (!order) throw new PublicAppError(404, "Order saknas.");
+    const acceptance = await one<any>(
+      env.DB,
+      `SELECT v.snapshot_json FROM offer_acceptances a JOIN offer_versions v ON v.id=a.offer_version_id WHERE a.id=?`,
+      order.acceptance_id
+    );
+    if (!acceptance) throw new PublicAppError(404, "Acceptance saknas.");
+    rows = (JSON.parse(acceptance.snapshot_json) as { rows: SnapshotRow[] }).rows;
+  }
+  for (const row of rows) {
+    const existing = await one<any>(
+      env.DB,
+      "SELECT id FROM sales_order_items WHERE sales_order_id=? AND offer_row_id=?",
+      salesOrderId,
+      row.id
+    );
+    if (existing) continue;
+    await env.DB.prepare(
       `INSERT INTO sales_order_items
         (id,sales_order_id,offer_row_id,product_id,price_id,description,quantity,unit,unit_price_minor,vat_percent,billing_type,billing_interval)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).bind(id("soit"), orderId, row.id, row.product_id, row.price_id, row.description, row.quantity, row.unit, row.unit_price_minor, row.vat_percent, row.billing_type, row.billing_interval))
-  ]);
-  await audit(env, "SALES_ORDER_CREATED", "sales_order", orderId, null, { acceptance_id: acceptanceId });
-  if (oneTimeRows.length) await createInternalInvoiceFromSalesOrder(env, orderId);
-  if (recurringRows.length) await createPendingSubscriptionFromSalesOrder(env, orderId);
-  return getSalesOrder(env, orderId);
+    ).bind(id("soit"), salesOrderId, row.id, row.product_id, row.price_id, row.description, row.quantity, row.unit, row.unit_price_minor, row.vat_percent, row.billing_type, row.billing_interval).run();
+  }
 }
 
 export async function createInternalInvoiceFromSalesOrder(env: Env, salesOrderId: string) {
   const existing = await one<any>(env.DB, "SELECT * FROM invoices WHERE sales_order_id=?", salesOrderId);
-  if (existing) return existing;
+  if (existing) {
+    await ensureInvoiceAccountingEvent(env, existing.id);
+    return existing;
+  }
   const order = await one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", salesOrderId);
   if (!order) throw new PublicAppError(404, "Order saknas.");
   const rows = await env.DB.prepare(
@@ -353,15 +408,14 @@ export async function createInternalInvoiceFromSalesOrder(env: Env, salesOrderId
     account_number: null
   })));
   const invoiceId = id("inv");
-  const sequence = await one<{ count: number }>(env.DB, "SELECT COUNT(*) count FROM invoices WHERE invoice_number LIKE 'TEST-%'");
-  const invoiceNumber = `TEST-${String((sequence?.count ?? 0) + 1).padStart(5, "0")}`;
+  const invoiceNumber = await reserveInvoiceNumber(env);
   const invoiceDate = new Date().toISOString().slice(0, 10);
   const due = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString().slice(0, 10);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO invoices
-        (id,customer_id,source_offer_id,sales_order_id,invoice_number,status,invoice_date,due_date,currency,subtotal,vat_total,total,balance,subtotal_minor,vat_total_minor,total_minor,balance_minor)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        (id,customer_id,source_offer_id,sales_order_id,invoice_number,invoice_type,status,invoice_date,due_date,currency,subtotal,vat_total,total,balance,subtotal_minor,vat_total_minor,total_minor,balance_minor)
+       VALUES (?,?,?,?,?,'PROJECT_INVOICE',?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(invoiceId, order.customer_id, order.offer_id, salesOrderId, invoiceNumber, "DRAFT", invoiceDate, due, order.currency, minorToMoney(totals.subtotal), minorToMoney(totals.vatTotal), minorToMoney(totals.total), minorToMoney(totals.total), totals.subtotal, totals.vatTotal, totals.total, totals.total),
     ...rows.results.map((row: any, index: number) => env.DB.prepare(
       `INSERT INTO invoice_rows
@@ -369,22 +423,29 @@ export async function createInternalInvoiceFromSalesOrder(env: Env, salesOrderId
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(id("irow"), invoiceId, index, row.description, row.quantity, row.unit, minorToMoney(row.unit_price_minor), row.vat_percent, row.product_id, row.price_id, row.billing_type, row.billing_interval, row.unit_price_minor))
   ]);
-  await createAccountingEvent(env, {
+  await ensureInvoiceAccountingEvent(env, invoiceId);
+  await audit(env, "INVOICE_CREATED", "invoice", invoiceId, null, { sales_order_id: salesOrderId });
+  return one<any>(env.DB, "SELECT * FROM invoices WHERE id=?", invoiceId);
+}
+
+export async function ensureInvoiceAccountingEvent(env: Env, invoiceId: string) {
+  const invoice = await one<any>(env.DB, "SELECT * FROM invoices WHERE id=?", invoiceId);
+  if (!invoice) throw new PublicAppError(404, "Faktura saknas.");
+  return createAccountingEvent(env, {
     event_type: "INVOICE_CREATED",
     entity_type: "invoice",
     entity_id: invoiceId,
-    currency: order.currency,
-    net_amount: totals.subtotal,
-    vat_amount: totals.vatTotal,
-    gross_amount: totals.total,
+    currency: invoice.currency,
+    net_amount: invoice.subtotal_minor ?? moneyToMinor(Number(invoice.subtotal ?? 0)),
+    vat_amount: invoice.vat_total_minor ?? moneyToMinor(Number(invoice.vat_total ?? 0)),
+    gross_amount: invoice.total_minor ?? moneyToMinor(Number(invoice.total ?? 0)),
     payload: {
       accounting_semantics: "SALE",
       invoice_id: invoiceId,
-      customer_id: order.customer_id
+      customer_id: invoice.customer_id,
+      invoice_type: invoice.invoice_type ?? "PROJECT_INVOICE"
     }
   });
-  await audit(env, "INVOICE_CREATED", "invoice", invoiceId, null, { sales_order_id: salesOrderId });
-  return one<any>(env.DB, "SELECT * FROM invoices WHERE id=?", invoiceId);
 }
 
 export async function createPendingSubscriptionFromSalesOrder(env: Env, salesOrderId: string) {
@@ -410,6 +471,21 @@ export async function createPendingSubscriptionFromSalesOrder(env: Env, salesOrd
   ]);
   await audit(env, "SUBSCRIPTION_PENDING_CREATED", "subscription", subscriptionId, null, { sales_order_id: salesOrderId });
   return one<any>(env.DB, "SELECT * FROM subscriptions WHERE id=?", subscriptionId);
+}
+
+async function reserveInvoiceNumber(env: Env): Promise<string> {
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO document_sequences(name,prefix,next_number) VALUES ('TEST_INVOICE','TEST-',1)"
+  ).run();
+  const sequence = await one<{ prefix: string; reserved: number }>(
+    env.DB,
+    `UPDATE document_sequences
+     SET next_number=next_number+1, updated_at=CURRENT_TIMESTAMP
+     WHERE name='TEST_INVOICE'
+     RETURNING prefix, next_number - 1 reserved`
+  );
+  if (!sequence) throw new PublicAppError(500, "Fakturanummerserie saknas.");
+  return `${sequence.prefix}${String(sequence.reserved).padStart(5, "0")}`;
 }
 
 export async function getOfferDetail(env: Env, offerId: string) {
@@ -450,7 +526,18 @@ export async function getCustomerDetail(env: Env, customerId: string) {
     env.DB.prepare("SELECT * FROM subscriptions WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM payment_methods WHERE customer_id=? ORDER BY is_default DESC, updated_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM payments WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
-    env.DB.prepare("SELECT * FROM audit_log WHERE entity_id IN (SELECT id FROM offers WHERE customer_id=?) OR entity_id=? ORDER BY created_at DESC LIMIT 50").bind(customerId, customerId).all<any>()
+    env.DB.prepare(
+      `SELECT * FROM audit_log
+       WHERE entity_id=?
+          OR entity_id IN (SELECT id FROM offers WHERE customer_id=?)
+          OR entity_id IN (SELECT id FROM offer_acceptances WHERE customer_id=?)
+          OR entity_id IN (SELECT id FROM sales_orders WHERE customer_id=?)
+          OR entity_id IN (SELECT id FROM invoices WHERE customer_id=?)
+          OR entity_id IN (SELECT id FROM subscriptions WHERE customer_id=?)
+          OR entity_id IN (SELECT id FROM payments WHERE customer_id=?)
+          OR entity_id IN (SELECT id FROM payment_methods WHERE customer_id=?)
+       ORDER BY created_at DESC LIMIT 100`
+    ).bind(customerId, customerId, customerId, customerId, customerId, customerId, customerId, customerId).all<any>()
   ]);
   return { customer, offers: offers.results, orders: orders.results, invoices: invoices.results, subscriptions: subscriptions.results, payment_methods: paymentMethods.results, payments: payments.results, audit: auditRows.results };
 }

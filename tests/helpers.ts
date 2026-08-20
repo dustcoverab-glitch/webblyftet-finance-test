@@ -45,6 +45,14 @@ export async function resetTables(db = env.DB): Promise<void> {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       expires_at TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS document_sequences (
+      name TEXT PRIMARY KEY,
+      prefix TEXT NOT NULL,
+      next_number INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `INSERT OR IGNORE INTO document_sequences(name,prefix,next_number)
+      VALUES ('TEST_INVOICE','TEST-',1)`,
     `CREATE TABLE IF NOT EXISTS sync_log (
       id TEXT PRIMARY KEY,
       direction TEXT NOT NULL,
@@ -158,6 +166,7 @@ export async function resetTables(db = env.DB): Promise<void> {
       token_hash TEXT NOT NULL UNIQUE,
       expires_at TEXT NOT NULL,
       used_at TEXT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE TABLE IF NOT EXISTS offer_acceptances (
@@ -172,7 +181,8 @@ export async function resetTables(db = env.DB): Promise<void> {
       user_agent TEXT,
       snapshot_hash TEXT NOT NULL,
       metadata_json TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(offer_version_id)
     )`,
     `CREATE TABLE IF NOT EXISTS sales_orders (
       id TEXT PRIMARY KEY,
@@ -239,6 +249,7 @@ export async function resetTables(db = env.DB): Promise<void> {
       source_offer_id TEXT,
       sales_order_id TEXT,
       invoice_number TEXT,
+      invoice_type TEXT NOT NULL DEFAULT 'PROJECT_INVOICE',
       status TEXT NOT NULL,
       invoice_date TEXT,
       due_date TEXT,
@@ -384,6 +395,7 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("DELETE FROM sync_log").run();
   await db.prepare("DELETE FROM fortnox_connections").run();
   await db.prepare("DELETE FROM oauth_states").run();
+  await db.prepare("UPDATE document_sequences SET next_number=1, updated_at=CURRENT_TIMESTAMP WHERE name='TEST_INVOICE'").run();
   await db.prepare("DELETE FROM audit_log").run();
   await db.prepare("DELETE FROM integration_events").run();
   await db.prepare("DELETE FROM accounting_events").run();

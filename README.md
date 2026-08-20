@@ -241,7 +241,9 @@ Fortnox-faktura skapas från den interna fakturan via `POST /api/invoices/:id/sy
 
 Produkter och priser synkas från Finance Core till Stripe med lokala idempotency keys och metadata (`webblyftet_product_id`, `webblyftet_price_id`). Subscriptions aktiveras bara om lokal subscription finns, kunden har Stripe Customer och en aktiv lokal Stripe-betalmetod finns.
 
-`invoice.paid` är canonical signal för lyckad återkommande debitering. Webhooken skapar/uppdaterar lokal payment, verifierar att lokal `payment.status === "SUCCEEDED"` och skapar sedan `SUBSCRIPTION_PAYMENT_RECEIVED` exakt en gång. `invoice.payment_failed` markerar subscription som `PAST_DUE` och skapar failed payment attempt utan känslig kortdata. Ett senare `invoice.paid` för samma Stripe-invoice får lyfta lokal payment från `FAILED -> PROCESSING -> SUCCEEDED`; sena failed-event får inte backa en lyckad payment.
+`invoice.paid` är canonical signal för lyckad återkommande debitering. Canonical Finance payment för recurring billing använder `provider = STRIPE` och `provider_payment_id = stripe_invoice_id`. PaymentIntent och charge-ID:n hör hemma på `payment_attempts`/metadata som diagnostik, inte som separata ekonomiska payments. Webhooken skapar/uppdaterar lokal payment, verifierar att lokal `payment.status === "SUCCEEDED"` och skapar sedan `SUBSCRIPTION_PAYMENT_RECEIVED` exakt en gång. `invoice.payment_failed` markerar subscription som `PAST_DUE` och skapar failed payment attempt utan känslig kortdata. Ett senare `invoice.paid` för samma Stripe-invoice får lyfta lokal payment från `FAILED -> PROCESSING -> SUCCEEDED`; sena failed-event får inte backa en lyckad payment.
+
+`payment_intent.succeeded` skapar fortsatt `PAYMENT_RECEIVED` för fristående engångsbetalningar. Om PaymentIntent kan kopplas till en Stripe invoice/subscription uppdaterar den bara payment/payment_attempt-diagnostik och skapar inget generellt accounting event; `invoice.paid` får ensam skapa subscription accounting event.
 
 Lokala testprodukter kan seedas från UI:t `Produkter & priser` eller via:
 
