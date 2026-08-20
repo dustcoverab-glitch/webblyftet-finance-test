@@ -6,6 +6,12 @@ export function isLocalEnvironment(env: Env): boolean {
 
 export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
+    const url = new URL(c.req.url);
+    if (url.pathname === "/webhooks/stripe") {
+      await next();
+      return;
+    }
+
     if (isLocalEnvironment(c.env)) {
       await next();
       return;
@@ -28,4 +34,3 @@ export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> 
     await next();
   };
 }
-

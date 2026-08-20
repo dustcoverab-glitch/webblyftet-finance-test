@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import {
   BadgeCheck, BookOpen, Building2, FileCheck2, FileText, Gauge, PlugZap,
-  ReceiptText, RefreshCw, Send, Users, WalletCards
+  Package, ReceiptText, RefreshCw, Repeat, Send, Users, WalletCards
 } from "lucide-react";
 import { api, post } from "./api";
 import "./styles.css";
@@ -20,14 +20,33 @@ type Invoice = {
   id: string; customer_name: string; total: number; balance?: number; status: string;
   fortnox_document_number?: string; due_date?: string;
 };
+type Product = {
+  id: string; name: string; description: string; product_type: string; active: number; prices: string | any[];
+};
+type Subscription = {
+  id: string; customer_name: string; status: string; monthly_amount: number; current_period_end?: string;
+  stripe_subscription_id?: string; items: string | any[];
+};
 
 function money(value: number | null | undefined) {
   return Number(value ?? 0).toLocaleString("sv-SE", { style: "currency", currency: "SEK", maximumFractionDigits: 0 });
 }
 
+function cents(value: number | null | undefined) {
+  return money(Number(value ?? 0) / 100);
+}
+
+function jsonArray(value: string | any[] | null | undefined) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (!value) return [];
+  try { return JSON.parse(value).filter(Boolean); } catch { return []; }
+}
+
 const nav = [
   ["/", "Översikt", Gauge],
   ["/customers", "Kunder", Users],
+  ["/products", "Produkter & priser", Package],
+  ["/subscriptions", "Abonnemang", Repeat],
   ["/offers", "Offerter", FileCheck2],
   ["/invoices", "Fakturor", FileText],
   ["/receipts", "Kvitton", ReceiptText],
@@ -44,7 +63,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <nav>{nav.map(([to, label, Icon]) =>
         <NavLink key={to} to={to} end={to === "/"}><Icon size={18}/><span>{label}</span></NavLink>
       )}</nav>
-      <div className="asideFoot">Fortnox-backed finance UI<br/><small>Cloudflare Worker + D1 + R2</small></div>
+      <div className="asideFoot">Finance Core + integrations<br/><small>Cloudflare Worker + D1 + R2</small></div>
     </aside>
     <main>{children}</main>
   </div>;
@@ -57,7 +76,7 @@ function Card({ children, className="" }: { children: React.ReactNode; className
   return <div className={`card ${className}`}>{children}</div>;
 }
 function Status({ value }: { value: string }) {
-  const good = ["SYNCED","PAID","ACCEPTED","CONNECTED"].includes(value);
+  const good = ["SYNCED","PAID","ACCEPTED","CONNECTED","ACTIVE","SUCCEEDED","OK"].includes(value);
   return <span className={`status ${good ? "good" : ""}`}>{value}</span>;
 }
 
@@ -66,7 +85,7 @@ function Dashboard() {
   useEffect(() => { api("/api/dashboard").then(setData).catch(console.error); }, []);
   if (!data) return <div>Hämtar…</div>;
   return <>
-    <PageHead title="Finance Control" subtitle="Ett separat testlager ovanpå Fortnox." />
+    <PageHead title="Finance Control" subtitle="Separat Finance Core med Stripe och Fortnox som adapters." />
     <div className="metricGrid">
       <Card><span>Kunder</span><strong>{data.customers?.count ?? 0}</strong></Card>
       <Card><span>Offerter</span><strong>{data.offers?.count ?? 0}</strong><small>{money(data.offers?.value)}</small></Card>
@@ -179,7 +198,7 @@ function Receipts() {
     await api("/api/receipts",{method:"POST",body:fd}); (e.currentTarget as HTMLFormElement).reset(); await load();
   }
   return <>
-    <PageHead title="Kvitton & underlag" subtitle="Originalfilen sparas i R2. Fortnox Inbox-kopplingen är isolerad tills OpenAPI-kontraktet verifierats."/>
+    <PageHead title="Kvitton & underlag" subtitle="Originalfilen sparas i R2. Fortnox Inbox används som extern adapter."/>
     <Card><form onSubmit={upload} className="formGrid">
       <input type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff" required/>
       <input name="supplier_name" placeholder="Leverantör"/><input name="amount" type="number" step="0.01" placeholder="Belopp"/>
@@ -212,12 +231,77 @@ function Bookkeeping(){
   const load=()=>api<any[]>("/api/vouchers").then(setRows);
   useEffect(()=>{load().catch(console.error)},[]);
   return <>
-    <PageHead title="Bokföring" subtitle="Läsbar verifikationsvy ovanpå Fortnox. Fortnox förblir bokföringsmotor."/>
+    <PageHead title="Bokföring" subtitle="Läsbar vy för redovisningsadaptern. Accounting events skapas i Finance Core."/>
     <Card><div className="inlineForm"><input value={year} onChange={e=>setYear(e.target.value)} placeholder="Financial year ID"/>
     <input value={series} onChange={e=>setSeries(e.target.value)} placeholder="Serie"/>
     <button onClick={async()=>{await post(`/api/vouchers/pull?year=${encodeURIComponent(year)}&series=${encodeURIComponent(series)}`); await load();}}>Hämta verifikationer</button></div></Card>
     <Card><table><thead><tr><th>Serie</th><th>#</th><th>Datum</th><th>Beskrivning</th></tr></thead><tbody>
       {rows.map(r=><tr key={r.id}><td>{r.series}</td><td>{r.voucher_number}</td><td>{r.transaction_date}</td><td>{r.description}</td></tr>)}
+    </tbody></table></Card>
+  </>;
+}
+
+function Products() {
+  const [rows, setRows] = useState<Product[]>([]);
+  const [open, setOpen] = useState(false);
+  const load = () => api<Product[]>("/api/products").then(setRows);
+  useEffect(() => { load().catch(console.error); }, []);
+  async function seed() {
+    await post("/api/products/seed-test");
+    await load();
+  }
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const product = await post<any>("/api/products", {
+      name: f.get("name"),
+      description: f.get("description"),
+      product_type: f.get("product_type"),
+      active: true
+    });
+    const billingType = String(f.get("billing_type"));
+    await post("/api/prices", {
+      product_id: product.id,
+      amount: Number(f.get("amount")),
+      currency: "SEK",
+      billing_type: billingType,
+      billing_interval: billingType === "RECURRING" ? f.get("billing_interval") : null,
+      vat_percent: Number(f.get("vat_percent") || 25),
+      active: true
+    });
+    setOpen(false);
+    await load();
+  }
+  return <>
+    <PageHead title="Produkter & priser" subtitle="Finance Core äger produkt- och prislogiken. Belopp sparas i ören."
+      action={<div className="actions"><button className="ghost" onClick={seed}>Skapa testprodukter</button><button onClick={()=>setOpen(!open)}>Ny produkt</button></div>} />
+    {open && <Card><form onSubmit={submit} className="formGrid">
+      <input name="name" placeholder="Produktnamn" required/><input name="description" placeholder="Beskrivning"/>
+      <select name="product_type"><option value="ONE_TIME">ONE_TIME</option><option value="SUBSCRIPTION">SUBSCRIPTION</option></select>
+      <input name="amount" type="number" placeholder="Pris i ören" required/>
+      <select name="billing_type"><option value="ONE_TIME">ONE_TIME</option><option value="RECURRING">RECURRING</option></select>
+      <select name="billing_interval"><option value="MONTH">MONTH</option><option value="YEAR">YEAR</option></select>
+      <input name="vat_percent" type="number" defaultValue="25"/><button type="submit">Spara</button>
+    </form></Card>}
+    <Card><table><thead><tr><th>Produkt</th><th>Typ</th><th>Pris</th><th>Stripe</th><th>Status</th></tr></thead><tbody>
+      {rows.map((r) => <tr key={r.id}><td><strong>{r.name}</strong><small>{r.description}</small></td><td>{r.product_type}</td>
+        <td>{jsonArray(r.prices).map((p:any) => <div key={p.id}>{cents(p.amount)} <small>{p.billing_type}{p.billing_interval ? ` / ${p.billing_interval}` : ""}</small></div>)}</td>
+        <td>{jsonArray(r.prices).map((p:any) => <small key={p.id}>{p.stripe_price_id || "Ej kopplad"}</small>)}</td>
+        <td><Status value={r.active ? "ACTIVE" : "INACTIVE"}/></td></tr>)}
+    </tbody></table></Card>
+  </>;
+}
+
+function Subscriptions() {
+  const [rows, setRows] = useState<Subscription[]>([]);
+  const load = () => api<Subscription[]>("/api/subscriptions").then(setRows);
+  useEffect(() => { load().catch(console.error); }, []);
+  return <>
+    <PageHead title="Abonnemang" subtitle="Core-vy för subscriptions, items och Stripe-status. Ingen checkout ännu."/>
+    <Card><table><thead><tr><th>Kund</th><th>Status</th><th>Produkter/items</th><th>Månadsbelopp</th><th>Nästa periodslut</th><th>Stripe-status</th></tr></thead><tbody>
+      {rows.map((r) => <tr key={r.id}><td>{r.customer_name}</td><td><Status value={r.status}/></td>
+        <td>{jsonArray(r.items).map((item:any, index:number) => <div key={index}>{item.product_name} × {item.quantity}<small>{cents(item.unit_amount)} {item.billing_interval || ""}</small></div>)}</td>
+        <td>{cents(r.monthly_amount)}</td><td>{r.current_period_end || "—"}</td><td>{r.stripe_subscription_id ? "Kopplad" : "Ej skapad"}</td></tr>)}
     </tbody></table></Card>
   </>;
 }
@@ -244,6 +328,7 @@ function Integration(){
 function App(){
   return <Layout><Routes>
     <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/offers" element={<Offers/>}/>
+    <Route path="/products" element={<Products/>}/><Route path="/subscriptions" element={<Subscriptions/>}/>
     <Route path="/invoices" element={<Invoices/>}/><Route path="/receipts" element={<Receipts/>}/>
     <Route path="/supplier-invoices" element={<SupplierInvoices/>}/><Route path="/bookkeeping" element={<Bookkeeping/>}/>
     <Route path="/integration" element={<Integration/>}/>

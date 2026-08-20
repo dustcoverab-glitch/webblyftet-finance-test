@@ -6,12 +6,24 @@ import { errorJson, oauthErrorPage } from "./lib/errors";
 import { escapeHtml } from "./lib/html";
 import { calculate } from "./lib/calculations";
 import {
+  createPrice,
+  createProduct,
+  createSubscription,
+  seedTestProducts
+} from "./core/finance";
+import {
   connectionStatus,
   createAuthUrl,
   exchangeCode,
-  fortnoxRequest,
   uploadInboxFile
-} from "./lib/fortnox";
+} from "./integrations/fortnox/client";
+import { syncCustomerToFortnox, pullCustomersFromFortnox } from "./integrations/fortnox/customers";
+import { createInvoiceFromFortnoxOffer, syncOfferToFortnox } from "./integrations/fortnox/offers";
+import { pullInvoicesFromFortnox } from "./integrations/fortnox/invoices";
+import { pullSupplierInvoicesFromFortnox, pullVouchersFromFortnox } from "./integrations/fortnox/accounting";
+import { createOrReuseStripeCustomer } from "./integrations/stripe/customers";
+import { createPaymentMethodSetupIntent } from "./integrations/stripe/subscriptions";
+import { constructStripeWebhookEvent, processStripeEvent } from "./integrations/stripe/webhooks";
 import { requireCloudflareAccess } from "./lib/security";
 import { sha256Hex } from "./lib/crypto";
 
@@ -21,6 +33,12 @@ app.onError((error, c) => errorJson(c, error));
 app.use("*", requireCloudflareAccess());
 
 app.get("/api/health", (c) => c.json({ ok: true, env: c.env.APP_ENV, now: new Date().toISOString() }));
+
+app.post("/webhooks/stripe", async (c) => {
+  const rawBody = await c.req.text();
+  const event = await constructStripeWebhookEvent(c.env, rawBody, c.req.header("stripe-signature") ?? null);
+  return c.json(await processStripeEvent(c.env, event));
+});
 
 app.get("/api/dashboard", async (c) => {
   const [customers, offers, invoices, receipts, logs, connection] = await Promise.all([
@@ -85,45 +103,116 @@ app.post("/api/customers", zValidator("json", customerSchema), async (c) => {
 app.post("/api/customers/:id/sync", async (c) => {
   const customer = await one<any>(c.env.DB, "SELECT * FROM customers WHERE id=?", c.req.param("id"));
   if (!customer) return c.json({ error: "Customer not found" }, 404);
-  const payload = {
-    Customer: {
-      Name: customer.name,
-      OrganisationNumber: customer.org_number || undefined,
-      Email: customer.email || undefined,
-      Phone1: customer.phone || undefined,
-      Address1: customer.address1 || undefined,
-      ZipCode: customer.zip || undefined,
-      City: customer.city || undefined,
-      CountryCode: customer.country || "SE"
-    }
-  };
-  const result = await fortnoxRequest<any>(c.env, "/customers", { method: "POST", json: payload });
-  const number = result.Customer?.CustomerNumber;
+  const result = await syncCustomerToFortnox(c.env, customer);
+  const number = result.providerCustomerNumber;
   await c.env.DB.prepare(
     "UPDATE customers SET fortnox_customer_number=?, sync_status='SYNCED', last_synced_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(number, customer.id).run();
-  return c.json({ customer: await one(c.env.DB, "SELECT * FROM customers WHERE id=?", customer.id), fortnox: result });
+  return c.json({ customer: await one(c.env.DB, "SELECT * FROM customers WHERE id=?", customer.id), fortnox: result.raw });
 });
 
 app.post("/api/customers/pull", async (c) => {
-  const result = await fortnoxRequest<any>(c.env, "/customers?limit=500", { method: "GET" });
-  const customers = result.Customers ?? [];
+  const customers = await pullCustomersFromFortnox(c.env);
   for (const item of customers) {
-    const existing = await one<{ id: string }>(c.env.DB, "SELECT id FROM customers WHERE fortnox_customer_number=?", item.CustomerNumber);
+    const existing = await one<{ id: string }>(c.env.DB, "SELECT id FROM customers WHERE fortnox_customer_number=?", item.providerCustomerNumber);
     if (existing) {
       await c.env.DB.prepare(
         `UPDATE customers SET name=?, org_number=?, email=?, phone=?, address1=?, zip=?, city=?, sync_status='SYNCED',
         last_synced_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`
-      ).bind(item.Name ?? "", item.OrganisationNumber ?? "", item.Email ?? "", item.Phone1 ?? "", item.Address1 ?? "", item.ZipCode ?? "", item.City ?? "", existing.id).run();
+      ).bind(item.name, item.orgNumber, item.email, item.phone, item.address1, item.zip, item.city, existing.id).run();
     } else {
       await c.env.DB.prepare(
         `INSERT INTO customers
         (id,fortnox_customer_number,org_number,name,email,phone,address1,zip,city,sync_status,last_synced_at)
         VALUES (?,?,?,?,?,?,?,?,?,'SYNCED',CURRENT_TIMESTAMP)`
-      ).bind(id("cus"), item.CustomerNumber, item.OrganisationNumber ?? "", item.Name ?? "", item.Email ?? "", item.Phone1 ?? "", item.Address1 ?? "", item.ZipCode ?? "", item.City ?? "").run();
+      ).bind(id("cus"), item.providerCustomerNumber, item.orgNumber, item.name, item.email, item.phone, item.address1, item.zip, item.city).run();
     }
   }
   return c.json({ imported: customers.length });
+});
+
+app.post("/api/customers/:id/stripe-customer", async (c) => {
+  return c.json(await createOrReuseStripeCustomer(c.env, c.req.param("id")));
+});
+
+app.post("/api/customers/:id/payment-method/setup", async (c) => {
+  return c.json(await createPaymentMethodSetupIntent(c.env, c.req.param("id")));
+});
+
+const productSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional().default(""),
+  product_type: z.enum(["ONE_TIME", "SUBSCRIPTION"]),
+  active: z.boolean().optional().default(true)
+});
+
+const priceSchema = z.object({
+  product_id: z.string().min(1),
+  amount: z.number().int().min(0),
+  currency: z.string().optional().default("SEK"),
+  billing_type: z.enum(["ONE_TIME", "RECURRING"]),
+  billing_interval: z.enum(["MONTH", "YEAR"]).nullable().optional(),
+  vat_percent: z.number().min(0).max(100).optional().default(25),
+  active: z.boolean().optional().default(true)
+});
+
+app.get("/api/products", async (c) => c.json(await all<any>(
+  c.env.DB,
+  `SELECT p.*, COALESCE(json_group_array(
+      CASE WHEN pr.id IS NULL THEN NULL ELSE json_object(
+        'id', pr.id, 'amount', pr.amount, 'currency', pr.currency,
+        'billing_type', pr.billing_type, 'billing_interval', pr.billing_interval,
+        'vat_percent', pr.vat_percent, 'active', pr.active, 'stripe_price_id', pr.stripe_price_id
+      ) END
+    ), '[]') prices
+   FROM products p
+   LEFT JOIN prices pr ON pr.product_id=p.id
+   GROUP BY p.id
+   ORDER BY p.created_at DESC`
+)));
+
+app.post("/api/products", zValidator("json", productSchema), async (c) => {
+  return c.json(await createProduct(c.env, c.req.valid("json")), 201);
+});
+
+app.post("/api/prices", zValidator("json", priceSchema), async (c) => {
+  return c.json(await createPrice(c.env, c.req.valid("json")), 201);
+});
+
+app.post("/api/products/seed-test", async (c) => c.json(await seedTestProducts(c.env)));
+
+const subscriptionSchema = z.object({
+  customer_id: z.string().min(1),
+  start_date: z.string().min(1),
+  items: z.array(z.object({
+    product_id: z.string().min(1),
+    price_id: z.string().min(1),
+    quantity: z.number().int().positive()
+  })).min(1)
+});
+
+app.get("/api/subscriptions", async (c) => c.json(await all<any>(
+  c.env.DB,
+  `SELECT s.*, c.name customer_name,
+     COALESCE(SUM(CASE
+       WHEN pr.billing_interval='YEAR' THEN ROUND(si.unit_amount * si.quantity / 12.0)
+       ELSE si.unit_amount * si.quantity
+     END),0) monthly_amount,
+     COALESCE(json_group_array(json_object(
+       'product_name', p.name, 'quantity', si.quantity, 'unit_amount', si.unit_amount,
+       'billing_interval', pr.billing_interval
+     )), '[]') items
+   FROM subscriptions s
+   JOIN customers c ON c.id=s.customer_id
+   LEFT JOIN subscription_items si ON si.subscription_id=s.id
+   LEFT JOIN products p ON p.id=si.product_id
+   LEFT JOIN prices pr ON pr.id=si.price_id
+   GROUP BY s.id
+   ORDER BY s.created_at DESC`
+)));
+
+app.post("/api/subscriptions", zValidator("json", subscriptionSchema), async (c) => {
+  return c.json(await createSubscription(c.env, c.req.valid("json")), 201);
 });
 
 const rowSchema = z.object({
@@ -187,30 +276,12 @@ app.post("/api/offers/:id/sync", async (c) => {
   if (!customer?.fortnox_customer_number) return c.json({ error: "Customer must be synced to Fortnox first." }, 409);
   const rows = await all<any>(c.env.DB, "SELECT * FROM offer_rows WHERE offer_id=? ORDER BY sort_order", offer.id);
 
-  const payload = {
-    Offer: {
-      CustomerNumber: customer.fortnox_customer_number,
-      OfferDate: offer.offer_date,
-      ExpireDate: offer.expire_date || undefined,
-      Remarks: offer.remarks || undefined,
-      OfferRows: rows.map((r) => ({
-        ArticleNumber: r.article_number || undefined,
-        Description: r.description,
-        DeliveredQuantity: r.quantity,
-        Unit: r.unit || undefined,
-        Price: r.unit_price,
-        Discount: r.discount_percent,
-        VAT: r.vat_percent,
-        AccountNumber: r.account_number || undefined
-      }))
-    }
-  };
-  const result = await fortnoxRequest<any>(c.env, "/offers", { method: "POST", json: payload });
-  const number = result.Offer?.DocumentNumber;
+  const result = await syncOfferToFortnox(c.env, customer.fortnox_customer_number, { ...offer, rows });
+  const number = result.providerDocumentNumber;
   await c.env.DB.prepare(
     "UPDATE offers SET fortnox_document_number=?, sync_status='SYNCED', status='SENT', updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(number, offer.id).run();
-  return c.json({ fortnox: result, offer: await one(c.env.DB, "SELECT * FROM offers WHERE id=?", offer.id) });
+  return c.json({ fortnox: result.raw, offer: await one(c.env.DB, "SELECT * FROM offers WHERE id=?", offer.id) });
 });
 
 app.post("/api/offers/:id/sign-link", async (c) => {
@@ -272,11 +343,7 @@ app.post("/api/offers/:id/create-invoice", async (c) => {
   if (!offer.fortnox_document_number) return c.json({ error: "Offer must be synced to Fortnox first." }, 409);
 
   // Fortnox supports creating invoice directly from an offer when the relevant permission is enabled.
-  const result = await fortnoxRequest<any>(
-    c.env,
-    `/offers/${encodeURIComponent(offer.fortnox_document_number)}/createinvoice`,
-    { method: "PUT" }
-  );
+  const result = await createInvoiceFromFortnoxOffer(c.env, offer.fortnox_document_number);
 
   const invoice = result.Invoice ?? result;
   const invoiceId = id("inv");
@@ -305,8 +372,7 @@ app.get("/api/invoices", async (c) => c.json(await all<any>(
 )));
 
 app.post("/api/invoices/pull", async (c) => {
-  const result = await fortnoxRequest<any>(c.env, "/invoices?limit=500", { method: "GET" });
-  const invoices = result.Invoices ?? [];
+  const invoices = await pullInvoicesFromFortnox(c.env);
   for (const item of invoices) {
     const customer = await one<any>(c.env.DB, "SELECT id FROM customers WHERE fortnox_customer_number=?", item.CustomerNumber);
     if (!customer) continue;
@@ -391,8 +457,7 @@ app.post("/api/receipts/:id/push-inbox", async (c) => {
 app.get("/api/supplier-invoices", async (c) => c.json(await all(c.env.DB, "SELECT * FROM supplier_invoices ORDER BY created_at DESC")));
 
 app.post("/api/supplier-invoices/pull", async (c) => {
-  const result = await fortnoxRequest<any>(c.env, "/supplierinvoices?limit=500", { method: "GET" });
-  const rows = result.SupplierInvoices ?? [];
+  const rows = await pullSupplierInvoicesFromFortnox(c.env);
   for (const item of rows) {
     const existing = await one<any>(c.env.DB, "SELECT id FROM supplier_invoices WHERE fortnox_document_number=?", item.GivenNumber);
     const values = [
@@ -428,12 +493,7 @@ app.post("/api/vouchers/pull", async (c) => {
   const year = c.req.query("year");
   const series = c.req.query("series") ?? "A";
   if (!year) return c.json({ error: "year query param required, e.g. ?year=1&series=A" }, 400);
-  const result = await fortnoxRequest<any>(
-    c.env,
-    `/vouchers/sublist/${encodeURIComponent(series)}?financialyear=${encodeURIComponent(year)}&limit=500`,
-    { method: "GET" }
-  );
-  const rows = result.Vouchers ?? [];
+  const rows = await pullVouchersFromFortnox(c.env, year, series);
   for (const item of rows) {
     await c.env.DB.prepare(
       `INSERT OR REPLACE INTO vouchers

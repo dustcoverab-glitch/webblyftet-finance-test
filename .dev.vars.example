@@ -1,3 +1,5 @@
 FORTNOX_CLIENT_ID=replace_me
 FORTNOX_CLIENT_SECRET=replace_me
 TOKEN_ENCRYPTION_KEY_BASE64=replace_with_32_random_bytes_base64
+STRIPE_SECRET_KEY=replace_with_stripe_test_secret_key
+STRIPE_WEBHOOK_SECRET=replace_with_stripe_webhook_secret

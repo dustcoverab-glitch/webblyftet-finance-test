@@ -24,10 +24,15 @@
 - [ ] R2 skapad
 - [ ] D1 migration körd
 - [ ] TOKEN_ENCRYPTION_KEY_BASE64 skapad med 32 random bytes
+- [ ] STRIPE_SECRET_KEY sparad som Cloudflare secret i testmode
+- [ ] STRIPE_WEBHOOK_SECRET sparad som Cloudflare secret från testmode-webhooken
 - [ ] APP_BASE_URL uppdaterad
 - [ ] Cloudflare Access application skapad för hela testdomänen
 - [ ] Cloudflare Access policy begränsar vilka testare som får åtkomst
 - [ ] Worker-route pekar på den separata Finance Test-Workern
+- [ ] Stripe webhook endpoint pekar på `/webhooks/stripe`
+- [ ] Stripe webhook-signatur testad med Stripe CLI eller testmode event
+- [ ] Testprodukter seedade i lokal/test D1, aldrig production
 - [ ] OAuth testad
 - [ ] Kund push testad
 - [ ] Kund pull testad

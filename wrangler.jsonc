@@ -28,7 +28,9 @@
     "required": [
       "FORTNOX_CLIENT_ID",
       "FORTNOX_CLIENT_SECRET",
-      "TOKEN_ENCRYPTION_KEY_BASE64"
+      "TOKEN_ENCRYPTION_KEY_BASE64",
+      "STRIPE_SECRET_KEY",
+      "STRIPE_WEBHOOK_SECRET"
     ]
   },
   "vars": {
@@ -61,7 +63,9 @@
         "required": [
           "FORTNOX_CLIENT_ID",
           "FORTNOX_CLIENT_SECRET",
-          "TOKEN_ENCRYPTION_KEY_BASE64"
+          "TOKEN_ENCRYPTION_KEY_BASE64",
+          "STRIPE_SECRET_KEY",
+          "STRIPE_WEBHOOK_SECRET"
         ]
       },
       "vars": {
@@ -90,7 +94,9 @@
         "required": [
           "FORTNOX_CLIENT_ID",
           "FORTNOX_CLIENT_SECRET",
-          "TOKEN_ENCRYPTION_KEY_BASE64"
+          "TOKEN_ENCRYPTION_KEY_BASE64",
+          "STRIPE_SECRET_KEY",
+          "STRIPE_WEBHOOK_SECRET"
         ]
       },
       "vars": {
