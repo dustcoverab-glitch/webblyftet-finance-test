@@ -257,7 +257,7 @@ app.post("/api/customers/:id/sync", async (c) => {
   const customer = await one<any>(c.env.DB, "SELECT * FROM customers WHERE id=?", c.req.param("id"));
   if (!customer) return c.json({ error: "Customer not found" }, 404);
   const result = await syncCustomerToFortnox(c.env, customer);
-  const number = result.providerCustomerNumber;
+  const number = customer.fortnox_customer_number || result.providerCustomerNumber;
   await c.env.DB.prepare(
     "UPDATE customers SET fortnox_customer_number=?, sync_status='SYNCED', last_synced_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(number, customer.id).run();

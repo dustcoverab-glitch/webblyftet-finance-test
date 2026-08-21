@@ -1,4 +1,5 @@
-import { fortnoxRequest } from "./client";
+import { FortnoxApiError, fortnoxRequest } from "./client";
+import { PublicAppError } from "../../lib/app-error";
 import type { FortnoxCustomerPayload } from "./types";
 
 export type FinanceCustomerForFortnox = {
@@ -10,6 +11,7 @@ export type FinanceCustomerForFortnox = {
   zip?: string | null;
   city?: string | null;
   country?: string | null;
+  fortnox_customer_number?: string | null;
 };
 
 export function toFortnoxCustomerPayload(customer: FinanceCustomerForFortnox): FortnoxCustomerPayload {
@@ -28,6 +30,26 @@ export function toFortnoxCustomerPayload(customer: FinanceCustomerForFortnox): F
 }
 
 export async function syncCustomerToFortnox(env: Env, customer: FinanceCustomerForFortnox) {
+  const customerNumber = customer.fortnox_customer_number?.trim();
+  if (customerNumber) {
+    try {
+      await fortnoxRequest<any>(env, `/customers/${encodeURIComponent(customerNumber)}`, { method: "GET" });
+    } catch (error) {
+      if (error instanceof FortnoxApiError && error.status === 404) {
+        throw new PublicAppError(409, "Mapped Fortnox customer not found");
+      }
+      throw error;
+    }
+    const result = await fortnoxRequest<any>(env, `/customers/${encodeURIComponent(customerNumber)}`, {
+      method: "PUT",
+      json: toFortnoxCustomerPayload(customer)
+    });
+    return {
+      providerCustomerNumber: customerNumber,
+      raw: result
+    };
+  }
+
   const result = await fortnoxRequest<any>(env, "/customers", {
     method: "POST",
     json: toFortnoxCustomerPayload(customer)
