@@ -23,13 +23,13 @@ import {
 import {
   connectionStatus,
   createAuthUrl,
-  exchangeCode,
-  uploadInboxFile
+  exchangeCode
 } from "./integrations/fortnox/client";
 import { syncCustomerToFortnox, pullCustomersFromFortnox } from "./integrations/fortnox/customers";
 import { syncOfferToFortnox } from "./integrations/fortnox/offers";
 import { pullInvoicesFromFortnox, syncInvoiceToFortnox } from "./integrations/fortnox/invoices";
 import { pullSupplierInvoicesFromFortnox, pullVouchersFromFortnox } from "./integrations/fortnox/accounting";
+import { pushReceiptToFortnoxInbox } from "./integrations/fortnox/receipts";
 import { createOrReuseStripeCustomer } from "./integrations/stripe/customers";
 import {
   activateStripeSubscription,
@@ -596,19 +596,7 @@ app.get("/api/receipts/:id/file", async (c) => {
 });
 
 app.post("/api/receipts/:id/push-inbox", async (c) => {
-  const receipt = await one<any>(c.env.DB, "SELECT * FROM receipts WHERE id=?", c.req.param("id"));
-  if (!receipt) return c.json({ error: "Not found" }, 404);
-  const object = await c.env.RECEIPTS.get(receipt.r2_key);
-  if (!object?.body) return c.json({ error: "File missing" }, 404);
-
-  const blob = await new Response(object.body).blob();
-  const file = new File([blob], receipt.filename, { type: receipt.mime_type });
-  const result = await uploadInboxFile(c.env, file, "Inbox_v");
-  const fileId = result.File?.Id ?? null;
-  await c.env.DB.prepare(
-    "UPDATE receipts SET fortnox_file_id=?, status='INBOX_UPLOADED', updated_at=CURRENT_TIMESTAMP WHERE id=?"
-  ).bind(fileId, receipt.id).run();
-  return c.json({ receipt_id: receipt.id, fortnox: result });
+  return c.json(await pushReceiptToFortnoxInbox(c.env, c.req.param("id")));
 });
 
 app.get("/api/supplier-invoices", async (c) => c.json(await all(c.env.DB, "SELECT * FROM supplier_invoices ORDER BY created_at DESC")));

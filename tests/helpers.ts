@@ -290,6 +290,28 @@ export async function resetTables(db = env.DB): Promise<void> {
       unit_price_minor INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
+    `CREATE TABLE IF NOT EXISTS receipts (
+      id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      r2_key TEXT NOT NULL UNIQUE,
+      amount REAL,
+      vat_amount REAL,
+      supplier_name TEXT,
+      transaction_date TEXT,
+      status TEXT NOT NULL DEFAULT 'UPLOADED',
+      fortnox_file_id TEXT,
+      fortnox_inbox_file_id TEXT,
+      fortnox_archive_file_id TEXT,
+      fortnox_inbox_path TEXT,
+      pushed_to_fortnox_at TEXT,
+      voucher_series TEXT,
+      voucher_number INTEGER,
+      supplier_invoice_number TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE TABLE IF NOT EXISTS payments (
       id TEXT PRIMARY KEY,
       customer_id TEXT NOT NULL,
@@ -409,6 +431,7 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("DELETE FROM subscriptions").run();
   await db.prepare("DELETE FROM invoice_rows").run();
   await db.prepare("DELETE FROM invoices").run();
+  await db.prepare("DELETE FROM receipts").run();
   await db.prepare("DELETE FROM sales_order_items").run();
   await db.prepare("DELETE FROM sales_orders").run();
   await db.prepare("DELETE FROM offer_acceptances").run();

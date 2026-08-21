@@ -17,6 +17,16 @@ const TOKEN_URL = "https://apps.fortnox.se/oauth-v1/token";
 const API_BASE = "https://api.fortnox.se/3";
 const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|api[_-]?key/i;
 
+export const FORTNOX_INBOX_PATHS = {
+  SUPPLIER_DOCUMENT: "Inbox_s",
+  VOUCHER_ATTACHMENT: "Inbox_v",
+  CUSTOMER_INVOICE_DOCUMENT: "Inbox_kf",
+  ORDER_DOCUMENT: "Inbox_o",
+  OFFER_DOCUMENT: "Inbox_of"
+} as const;
+
+export type FortnoxInboxPath = typeof FORTNOX_INBOX_PATHS[keyof typeof FORTNOX_INBOX_PATHS];
+
 export class FortnoxApiError extends PublicAppError {
   constructor(
     status: number,
@@ -276,7 +286,8 @@ export async function fortnoxRequest<T>(
 export async function uploadInboxFile(
   env: Env,
   file: File,
-  folder: "Inbox_v" | "Inbox_s" | "Inbox_kf" | "Inbox_o" | "Inbox_of" = "Inbox_v"
+  folder: FortnoxInboxPath,
+  options: { folderId?: string } = {}
 ) {
   requireFortnoxConfigured(env);
   const connection = await one<Connection>(
@@ -288,7 +299,9 @@ export async function uploadInboxFile(
   const token = await refreshIfNeeded(env, connection);
   const form = new FormData();
   form.append("file", file);
-  const endpoint = `${API_BASE}/inbox?path=${encodeURIComponent(folder)}`;
+  const endpoint = options.folderId
+    ? `${API_BASE}/inbox?folderid=${encodeURIComponent(options.folderId)}`
+    : `${API_BASE}/inbox?path=${encodeURIComponent(folder)}`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -312,7 +325,7 @@ export async function uploadInboxFile(
   ).bind(
     syncId, "OUTBOUND", "FORTNOX_INBOX", "POST", endpoint, response.status,
     response.ok ? 1 : 0,
-    stringifyLogValue({ folder, filename: file.name, mime_type: file.type, size: file.size }),
+    stringifyLogValue({ folder, folder_id: options.folderId ?? null, filename: file.name, mime_type: file.type, size: file.size }),
     stringifyLogValue(parsed),
     response.ok ? null : `HTTP ${response.status}`
   ).run();
@@ -325,7 +338,69 @@ export async function uploadInboxFile(
       parsed
     );
   }
-  return parsed as { File?: { Id?: string; Name?: string; Path?: string; Size?: string } };
+  return parsed as { File?: { Id?: string; ArchiveFileId?: string; Name?: string; Path?: string; Size?: string } };
+}
+
+export async function verifyInboxFolder(env: Env, folder: FortnoxInboxPath) {
+  const result = await fortnoxRequest<any>(env, "/inbox", { method: "GET" });
+  const normalized = folder.toLowerCase();
+  const match = result.Folder?.Folders?.find((item: any) => String(item.Id ?? "").toLowerCase() === normalized);
+  if (!match?.Id) throw new PublicAppError(409, `Fortnox Inbox folder ${folder} not found`);
+  return { folderId: String(match.Id), raw: result };
+}
+
+export async function retrieveInboxFile(env: Env, fileId: string) {
+  requireFortnoxConfigured(env);
+  const connection = await one<Connection>(
+    env.DB,
+    "SELECT id, tenant_id, access_token_enc, refresh_token_enc, token_expires_at, scope FROM fortnox_connections LIMIT 1"
+  );
+  if (!connection) throw new PublicAppError(409, "Fortnox är inte anslutet.");
+
+  const token = await refreshIfNeeded(env, connection);
+  const endpoint = `${API_BASE}/inbox/${encodeURIComponent(fileId)}`;
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json"
+    }
+  });
+
+  let parsed: unknown = {
+    file_id: fileId,
+    content_type: response.headers.get("content-type"),
+    content_length: response.headers.get("content-length")
+  };
+  if (!response.ok) {
+    const raw = await response.text();
+    if (raw) {
+      try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+    }
+  }
+
+  const syncId = id("sync");
+  await env.DB.prepare(
+    `INSERT INTO sync_log
+      (id,direction,entity_type,operation,endpoint,http_status,success,request_json,response_json,error_message)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    syncId, "OUTBOUND", "FORTNOX_INBOX", "GET", endpoint, response.status,
+    response.ok ? 1 : 0,
+    null,
+    stringifyLogValue(parsed),
+    response.ok ? null : `HTTP ${response.status}`
+  ).run();
+
+  if (!response.ok) {
+    throw new FortnoxApiError(
+      response.status >= 500 ? 502 : response.status,
+      `Fortnox Inbox-filen kunde inte verifieras. Referens: ${syncId}`,
+      syncId,
+      parsed
+    );
+  }
+  return parsed;
 }
 
 export async function connectionStatus(env: Env) {
