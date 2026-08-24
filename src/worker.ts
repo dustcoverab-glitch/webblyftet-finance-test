@@ -21,6 +21,15 @@ import {
   getSubscriptionDetail
 } from "./core/business-flow";
 import {
+  activateCustomerOrder,
+  confirmCustomerOrderPaymentMethod,
+  createCustomerOrderSession,
+  createCustomerOrderSetupIntent,
+  getCustomerOrderSessionForToken,
+  markCustomerOrderReviewed,
+  signCustomerOrder
+} from "./core/customer-order";
+import {
   connectionStatus,
   createAuthUrl,
   exchangeCode
@@ -316,6 +325,58 @@ app.get("/api/stripe/config", async (c) => {
   }, configured ? 200 : 503);
 });
 
+app.get("/customer-order/:token/session", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await getCustomerOrderSessionForToken(c.env, c.req.param("token")));
+});
+
+app.get("/customer-order/:token/stripe-config", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  await getCustomerOrderSessionForToken(c.env, c.req.param("token"));
+  const configured = isStripeConfigured(c.env) && isStripePublishableKeyConfigured(c.env);
+  return c.json({
+    configured,
+    publishableKey: configured ? c.env.STRIPE_PUBLISHABLE_KEY : "",
+    message: configured ? undefined : "Stripe är inte konfigurerat ännu."
+  }, configured ? 200 : 503);
+});
+
+app.post("/customer-order/:token/review", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await markCustomerOrderReviewed(c.env, c.req.param("token")));
+});
+
+const customerOrderSignSchema = z.object({
+  signer_name: z.string().min(1),
+  signer_email: z.string().email()
+});
+
+app.post("/customer-order/:token/sign", zValidator("json", customerOrderSignSchema), async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  const data = c.req.valid("json");
+  return c.json(await signCustomerOrder(c.env, c.req.param("token"), {
+    signer_name: data.signer_name,
+    signer_email: data.signer_email,
+    ip_address: c.req.header("cf-connecting-ip") ?? "",
+    user_agent: c.req.header("user-agent") ?? ""
+  }));
+});
+
+app.post("/customer-order/:token/payment-method/setup", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await createCustomerOrderSetupIntent(c.env, c.req.param("token")));
+});
+
+app.post("/customer-order/:token/payment-method/confirm", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await confirmCustomerOrderPaymentMethod(c.env, c.req.param("token")));
+});
+
+app.post("/customer-order/:token/activate", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await activateCustomerOrder(c.env, c.req.param("token")));
+});
+
 const productSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().default(""),
@@ -406,6 +467,10 @@ app.post("/api/subscriptions/:id/activate", async (c) => {
 
 app.post("/api/subscriptions/:id/cancel", async (c) => {
   return c.json(await cancelStripeSubscriptionAtPeriodEnd(c.env, c.req.param("id")));
+});
+
+app.post("/api/sales-orders/:id/customer-session", async (c) => {
+  return c.json(await createCustomerOrderSession(c.env, c.req.param("id")));
 });
 
 const rowSchema = z.object({

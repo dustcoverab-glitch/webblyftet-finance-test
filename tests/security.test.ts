@@ -100,6 +100,24 @@ describe("API health and Access middleware", () => {
     }
   });
 
+  it("bypasses Cloudflare Access for customer-order token routes only", async () => {
+    const tokenRoute = await worker.fetch(
+      new Request("https://finance-test.example/customer-order/not-a-real-token/session"),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+      createExecutionContext()
+    );
+    expect(tokenRoute.status).toBe(404);
+
+    for (const path of ["/customer-order-test", "/customer-orders/not-a-real-token/session"]) {
+      const response = await worker.fetch(
+        new Request(`https://finance-test.example${path}`),
+        workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+        createExecutionContext()
+      );
+      expect(response.status).toBe(403);
+    }
+  });
+
   it("applies security headers", async () => {
     const response = await worker.fetch(
       new Request("https://finance-test.example/api/health"),

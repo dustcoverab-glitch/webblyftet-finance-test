@@ -6,6 +6,7 @@ import {
 } from "./config";
 
 const STRIPE_WEBHOOK_PATH = "/webhooks/stripe";
+const CUSTOMER_ORDER_PREFIX = "/customer-order/";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|client_secret|secret|password|api[_-]?key|cookie|set-cookie|stripe[_-]?.*secret/i;
 const SENSITIVE_TEXT_PATTERNS = [
@@ -37,10 +38,14 @@ export function isExactStripeWebhookPath(pathname: string): boolean {
   return pathname === STRIPE_WEBHOOK_PATH;
 }
 
+export function isPublicCustomerOrderPath(pathname: string): boolean {
+  return pathname.startsWith(CUSTOMER_ORDER_PREFIX);
+}
+
 export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const url = new URL(c.req.url);
-    if (isExactStripeWebhookPath(url.pathname)) {
+    if (isExactStripeWebhookPath(url.pathname) || isPublicCustomerOrderPath(url.pathname)) {
       await next();
       return;
     }
@@ -279,7 +284,8 @@ function isRateLimitedPath(pathname: string): boolean {
   return [
     "/auth/fortnox/start",
     "/api/receipts",
-    "/sign/"
+    "/sign/",
+    "/customer-order/"
   ].some((prefix) => pathname === prefix || pathname.startsWith(prefix)) ||
     /\/(sync|sync-fortnox|sync-stripe|pull|activate|cancel|payment-method\/setup|stripe-customer|push-inbox|disconnect|sign-link)$/.test(pathname);
 }

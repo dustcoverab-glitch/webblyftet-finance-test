@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Link, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   BadgeCheck, BookOpen, CheckCircle2, CircleAlert, Clock3, FileCheck2, FileText, Gauge, PlugZap,
   Package, Plus, ReceiptText, RefreshCw, Repeat, Search, Trash2, Users, WalletCards
@@ -43,6 +43,28 @@ type StripePaymentAction = {
   required?: boolean;
   type?: string;
   client_secret?: string | null;
+};
+type CustomerOrderSession = {
+  id: string;
+  status: string;
+  expires_at: string;
+  reviewed_at?: string | null;
+  signed_at?: string | null;
+  completed_at?: string | null;
+  signer_name?: string | null;
+  document_hash: string;
+  snapshot: any;
+  requirements: {
+    signing_required: boolean;
+    payment_method_required: boolean;
+    activation_required: boolean;
+  };
+  payment_method?: any;
+  invoices: any[];
+  subscriptions: any[];
+  stripe_configured: boolean;
+  activation_error?: string | null;
+  payment_action?: StripePaymentAction | null;
 };
 type OfferEditorRow = {
   id: string;
@@ -503,12 +525,19 @@ function CustomerDetail() {
   const { id } = useParams();
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
+  const [customerOrderLink, setCustomerOrderLink] = useState("");
   const load = () => api<any>(`/api/customers/${id}`).then(setData);
   useEffect(() => { load().catch((err)=>setError(err.message)); }, [id]);
   if (error) return <ErrorNotice message={error}/>;
   if (!data) return <EmptyState title="Hämtar kund" text="Samlar erbjudanden, order, fakturor, subscriptions och payments." />;
   const c = data.customer;
   const metrics = data.metrics ?? {};
+  async function createOrderLink(orderId: string) {
+    const result = await post<{ url: string; expires_at: string }>(`/api/sales-orders/${orderId}/customer-session`);
+    setCustomerOrderLink(result.url);
+    await navigator.clipboard?.writeText(result.url);
+    await load();
+  }
   return <>
     <PageHead title={c.name} subtitle="Kunddetalj med offerter, order, fakturor, abonnemang och audit."
       action={<div className="actions"><Link className="button ghost" to={`/payment-method/${c.id}`}>Kortregistrering</Link><button onClick={async()=>{await post(`/api/customers/${c.id}/stripe-customer`); await load();}}>Skapa Stripe Customer</button></div>} />
@@ -534,9 +563,12 @@ function CustomerDetail() {
         {data.offers.map((offer:any)=><tr key={offer.id}><td><Link to={`/offers/${offer.id}`}>{offer.title || "Offert"}</Link><small>{offer.id}</small></td><td>{displayDate(offer.offer_date)}</td><td>{money(offer.total)}</td><td><Status value={offer.status}/></td></tr>)}
         {!data.offers.length && <tr><td colSpan={4}><EmptyState title="Inga offerter" text="Skapa en offert när kunden ska få ett kommersiellt förslag." /></td></tr>}
       </tbody></table></Card>
-      <Card><h3>Sales orders</h3><table><thead><tr><th>Order</th><th>Engång</th><th>MRR</th><th>Status</th></tr></thead><tbody>
-        {data.orders.map((order:any)=><tr key={order.id}><td>{order.id}<small>{displayDate(order.created_at)}</small></td><td>{moneyMinor(order.one_time_total_minor)}</td><td>{moneyMinor(order.recurring_monthly_minor)}</td><td><Status value={order.status}/></td></tr>)}
-        {!data.orders.length && <tr><td colSpan={4}><EmptyState title="Inga sales orders" text="Sales orders skapas när en offert accepteras." /></td></tr>}
+      <Card><h3>Sales orders</h3>{customerOrderLink && <div className="copyNotice"><strong>Kundlänk kopierad</strong><input readOnly value={customerOrderLink}/></div>}<table><thead><tr><th>Order</th><th>Engång</th><th>MRR</th><th>Onboarding</th><th>Status</th><th></th></tr></thead><tbody>
+        {data.orders.map((order:any)=>{
+          const latestSession = order.customer_order_sessions?.[0];
+          return <tr key={order.id}><td>{order.id}<small>{displayDate(order.created_at)}</small></td><td>{moneyMinor(order.one_time_total_minor)}</td><td>{moneyMinor(order.recurring_monthly_minor)}</td><td><Status value={latestSession?.status || "NOT SENT"}/><small>{latestSession ? `Giltig till ${displayDate(latestSession.expires_at)}` : "Ingen kundlänk"}</small></td><td><Status value={order.status}/></td><td><button className="small ghost" onClick={()=>createOrderLink(order.id)}>Skapa kundlänk</button></td></tr>;
+        })}
+        {!data.orders.length && <tr><td colSpan={6}><EmptyState title="Inga sales orders" text="Sales orders skapas när en offert accepteras." /></td></tr>}
       </tbody></table></Card>
     </div>
     <Card><h3>Fakturor</h3><table><thead><tr><th>Faktura</th><th>Typ</th><th>Förfallo</th><th>Total</th><th>Saldo</th><th>Status</th><th></th></tr></thead><tbody>
@@ -1122,6 +1154,157 @@ function PaymentMethodPage() {
   </>;
 }
 
+function orderRows(rows: any[], type: "ONE_TIME" | "RECURRING") {
+  return rows.filter((row) => row.billing_type === type);
+}
+
+function CustomerOrderRows({ rows }: { rows: any[] }) {
+  if (!rows.length) return <p className="muted">Inga rader i detta steg.</p>;
+  return <div className="customerOrderRows">{rows.map((row) => {
+    const net = Math.round(Number(row.unit_price_minor ?? 0) * Number(row.quantity ?? 0));
+    const vat = Math.round(net * Number(row.vat_percent ?? 0) / 100);
+    return <div className="customerOrderLine" key={row.id}>
+      <div><strong>{row.description}</strong><small>{row.billing_type}{row.billing_interval ? ` · ${row.billing_interval}` : ""}</small></div>
+      <span>{row.quantity} {row.unit || "st"}</span>
+      <span>{moneyMinor(row.unit_price_minor)}</span>
+      <span>{row.vat_percent}% moms</span>
+      <strong>{moneyMinor(net + vat)}</strong>
+    </div>;
+  })}</div>;
+}
+
+function CustomerOrderPage() {
+  const { token } = useParams();
+  const [session, setSession] = useState<CustomerOrderSession | null>(null);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [cardMounted, setCardMounted] = useState(false);
+  const [stripeState, setStripeState] = useState<{ stripe?: any; card?: any; clientSecret?: string | null }>({});
+  const load = () => api<CustomerOrderSession>(`/customer-order/${token}/session`).then(setSession);
+  useEffect(() => { load().catch((error)=>setMessage(error.message)); }, [token]);
+  useEffect(() => () => { stripeState.card?.unmount?.(); }, [stripeState.card]);
+  if (!session) return <div className="customerOrderShell"><div className="customerOrderBrand"><div className="brandMark">W</div><strong>Webblyftet</strong></div><Card><EmptyState title="Hämtar order" text={message || "Kontrollerar din säkra orderlänk."}/></Card></div>;
+
+  const snapshot = session.snapshot;
+  const oneTimeRows = orderRows(snapshot.rows ?? [], "ONE_TIME");
+  const recurringRows = orderRows(snapshot.rows ?? [], "RECURRING");
+  const step = session.completed_at ? 4 : session.requirements.activation_required && !session.requirements.payment_method_required ? 3 : session.requirements.payment_method_required ? 2 : session.signed_at ? 3 : session.reviewed_at ? 1 : 0;
+  const steps = ["Granska", "Signera", "Betalmetod", "Aktivera", "Klart"];
+  async function run<T,>(fn: () => Promise<T>) {
+    setBusy(true); setMessage("");
+    try { return await fn(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Något gick fel."); }
+    finally { setBusy(false); }
+  }
+  async function review() {
+    await run(async()=>setSession(await post<CustomerOrderSession>(`/customer-order/${token}/review`)));
+  }
+  async function sign(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await run(async()=>setSession(await post<CustomerOrderSession>(`/customer-order/${token}/sign`, {
+      signer_name: form.get("signer_name"),
+      signer_email: form.get("signer_email")
+    })));
+  }
+  async function startPaymentMethodSetup() {
+    await run(async()=>{
+      const config = await api<{ configured: boolean; publishableKey: string; message?: string }>(`/customer-order/${token}/stripe-config`);
+      if (!config.configured) throw new Error(config.message ?? "Stripe är inte konfigurerat ännu.");
+      const setup = await post<any>(`/customer-order/${token}/payment-method/setup`);
+      if (setup.required === false) {
+        await load();
+        return;
+      }
+      const stripe = await stripeJs(config.publishableKey);
+      const elements = stripe.elements();
+      const card = elements.create("card");
+      card.mount("#customer-card-element");
+      setStripeState({ stripe, card, clientSecret: setup.client_secret });
+      setCardMounted(true);
+      setMessage("Fyll i testkortet och spara betalmetoden.");
+    });
+  }
+  async function confirmPaymentMethod(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await run(async()=>{
+      if (!stripeState.stripe || !stripeState.card || !stripeState.clientSecret) throw new Error("Kortformuläret är inte redo.");
+      const result = await stripeState.stripe.confirmCardSetup(stripeState.clientSecret, { payment_method: { card: stripeState.card } });
+      if (result.error) throw new Error(result.error.message);
+      setSession(await post<CustomerOrderSession>(`/customer-order/${token}/payment-method/confirm`));
+      setMessage("Betalmetoden är verifierad.");
+    });
+  }
+  async function activate() {
+    await run(async()=>{
+      const result = await post<CustomerOrderSession>(`/customer-order/${token}/activate`);
+      if (result.payment_action?.required && result.payment_action.client_secret) {
+        const config = await api<{ publishableKey: string }>(`/customer-order/${token}/stripe-config`);
+        const stripe = await stripeJs(config.publishableKey);
+        const confirmation = await stripe.confirmCardPayment(result.payment_action.client_secret);
+        if (confirmation.error) throw new Error(confirmation.error.message);
+      }
+      setSession(result);
+    });
+  }
+  return <div className="customerOrderShell">
+    <header className="customerOrderHeader">
+      <div className="customerOrderBrand"><div className="brandMark">W</div><div><strong>Webblyftet</strong><span>Orderaktivering</span></div></div>
+      <Status value={session.status}/>
+    </header>
+    <section className="customerOrderHero">
+      <div><small>Order till {snapshot.customer?.name}</small><h1>{snapshot.offer?.title || "Din Webblyftet-order"}</h1><p>Granska ordern, signera och registrera betalmetod för abonnemangsposter.</p></div>
+      <div className="customerOrderHash"><span>Dokumenthash</span><code>{session.document_hash.slice(0, 20)}…</code><small>Signerad snapshot är låst.</small></div>
+    </section>
+    <div className="customerSteps">{steps.map((label, index)=><div key={label} className={`customerStep ${index <= step ? "active" : ""}`}><span>{index + 1}</span><strong>{label}</strong></div>)}</div>
+    {message && <ErrorNotice message={message}/>}
+    <div className="customerOrderGrid">
+      <Card className="customerOrderMain">
+        <h2>Granska order</h2>
+        <div className="customerTotals">
+          <div><span>Engångskostnad</span><strong>{moneyMinor(snapshot.totals?.one_time_total_minor)}</strong><small>Moms {moneyMinor(snapshot.totals?.one_time_vat_minor)}</small></div>
+          <div><span>Återkommande / mån</span><strong>{moneyMinor(snapshot.totals?.recurring_monthly_total_minor)}</strong><small>Moms {moneyMinor(snapshot.totals?.recurring_monthly_vat_minor)}</small></div>
+          <div><span>Årspris återkommande</span><strong>{moneyMinor(snapshot.totals?.recurring_year_total_minor)}</strong><small>Årlig motsvarighet</small></div>
+        </div>
+        <h3>Engångsposter</h3><CustomerOrderRows rows={oneTimeRows}/>
+        <h3>Abonnemangsposter</h3><CustomerOrderRows rows={recurringRows}/>
+        {!session.reviewed_at && <button disabled={busy} onClick={review}>Jag har granskat ordern</button>}
+      </Card>
+      <aside className="customerOrderSide">
+        <Card>
+          <h3>Signering</h3>
+          {session.signed_at ? <div className="goodState"><CheckCircle2 size={18}/><span>Signerad av {session.signer_name}</span></div> :
+            <form className="paymentForm" onSubmit={sign}>
+              <input name="signer_name" placeholder="Namn" required/>
+              <input name="signer_email" type="email" placeholder="E-post" defaultValue={snapshot.customer?.email || ""} required/>
+              <label className="checkLine"><input type="checkbox" required/> Jag godkänner orderinnehållet ovan.</label>
+              <button disabled={busy || !session.reviewed_at} type="submit">Signera order</button>
+              {!session.reviewed_at && <small className="muted">Granska ordern först.</small>}
+            </form>}
+        </Card>
+        <Card>
+          <h3>Betalmetod</h3>
+          {!session.requirements.payment_method_required ? <div className="goodState"><CheckCircle2 size={18}/><span>{session.payment_method ? `${session.payment_method.brand || "Kort"} •••• ${session.payment_method.last4}` : "Ingen betalmetod krävs"}</span></div> :
+            <div className="paymentForm">
+              {!cardMounted && <button disabled={busy || !session.signed_at} onClick={startPaymentMethodSetup}>Registrera testkort</button>}
+              <form onSubmit={confirmPaymentMethod}><div id="customer-card-element" className="stripeCardMount"></div>{cardMounted && <button disabled={busy} type="submit">Spara betalmetod</button>}</form>
+            </div>}
+        </Card>
+        <Card>
+          <h3>Aktivera</h3>
+          {session.completed_at ? <div className="goodState"><CheckCircle2 size={18}/><span>Ordern är klar</span></div> :
+            <button disabled={busy || session.requirements.signing_required || session.requirements.payment_method_required} onClick={activate}>Aktivera order</button>}
+          <div className="summaryList">
+            <div><span>Faktura</span><Status value={session.invoices?.[0]?.status || "Ej skapad"}/></div>
+            <div><span>Subscription</span><Status value={session.subscriptions?.[0]?.status || "Ej aktuellt"}/></div>
+            <div><span>Länk giltig till</span><strong>{displayDate(session.expires_at)}</strong></div>
+          </div>
+        </Card>
+      </aside>
+    </div>
+  </div>;
+}
+
 function Integration(){
   const [status,setStatus]=useState<IntegrationStatus|null>(null); const [stripeStatus,setStripeStatus]=useState<any>(null); const [logs,setLogs]=useState<any[]>([]);
   const load=async()=>{setStatus(await api("/api/integration/status"));try{setStripeStatus(await api("/api/stripe/config"));}catch(error){setStripeStatus({configured:false,message:error instanceof Error ? error.message : "Stripe är inte konfigurerat ännu."});}setLogs(await api("/api/sync-log"));};
@@ -1161,6 +1344,10 @@ function Integration(){
 }
 
 function App(){
+  const location = useLocation();
+  if (location.pathname.startsWith("/customer-order/")) {
+    return <Routes><Route path="/customer-order/:token" element={<CustomerOrderPage/>}/></Routes>;
+  }
   return <Layout><Routes>
     <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/customers/:id" element={<CustomerDetail/>}/><Route path="/offers" element={<Offers/>}/>
     <Route path="/offers/:id" element={<OfferDetail/>}/>

@@ -603,9 +603,10 @@ export async function getSubscriptionDetail(env: Env, subscriptionId: string) {
 export async function getCustomerDetail(env: Env, customerId: string) {
   const customer = await one<any>(env.DB, "SELECT * FROM customers WHERE id=?", customerId);
   if (!customer) return null;
-  const [offers, orders, invoices, subscriptions, paymentMethods, payments, auditRows, revenue, mrr, outstanding] = await Promise.all([
+  const [offers, orders, orderSessions, invoices, subscriptions, paymentMethods, payments, auditRows, revenue, mrr, outstanding] = await Promise.all([
     env.DB.prepare("SELECT * FROM offers WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM sales_orders WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
+    env.DB.prepare("SELECT id,sales_order_id,status,expires_at,reviewed_at,signed_at,completed_at,created_at FROM customer_order_sessions WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM invoices WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM subscriptions WHERE customer_id=? ORDER BY created_at DESC").bind(customerId).all<any>(),
     env.DB.prepare("SELECT * FROM payment_methods WHERE customer_id=? ORDER BY is_default DESC, updated_at DESC").bind(customerId).all<any>(),
@@ -656,7 +657,10 @@ export async function getCustomerDetail(env: Env, customerId: string) {
       latest_payment: payments.results[0] ?? null
     },
     offers: offers.results,
-    orders: orders.results,
+    orders: orders.results.map((order: any) => ({
+      ...order,
+      customer_order_sessions: orderSessions.results.filter((session: any) => session.sales_order_id === order.id)
+    })),
     invoices: invoices.results,
     subscriptions: subscriptions.results,
     payment_methods: paymentMethods.results,
