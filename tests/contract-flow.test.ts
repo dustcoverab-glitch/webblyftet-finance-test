@@ -88,6 +88,28 @@ describe("Contract flow handoff", () => {
     expect(JSON.parse(session!.signing_snapshot_json).rows).toHaveLength(2);
   });
 
+  it("reuses the existing customer-order session when customer link creation is retried", async () => {
+    const prices = await seedContractProducts();
+    const flow = await createContractFlowFromHandoff(workerEnv(), {
+      ...simulatedContractFlowHandoff(),
+      items: [
+        { price_id: prices.projectPriceId, quantity: 1, description: "Webblyftet Bas" },
+        { price_id: prices.servicePriceId, quantity: 1, description: "Webblyftet Service" }
+      ]
+    });
+
+    const first = await createContractFlowCustomerLink(workerEnv(), flow!.id);
+    const second = await createContractFlowCustomerLink(workerEnv(), flow!.id);
+
+    expect(first?.customer_order_session_id).toBe(second?.customer_order_session_id);
+    expect((first as any).customer_order_url).toContain("/customer-order/");
+    expect((second as any).customer_order_url).toBeUndefined();
+    const sessions = await env.DB.prepare("SELECT COUNT(*) AS count FROM customer_order_sessions WHERE sales_order_id=?")
+      .bind(first!.sales_order_id)
+      .first<{ count: number }>();
+    expect(sessions?.count).toBe(1);
+  });
+
   it("keeps contract-flow routes internal while customer-order remains public", async () => {
     const protectedResponse = await worker.fetch(
       new Request("https://finance-test.example/contract-flow/new"),

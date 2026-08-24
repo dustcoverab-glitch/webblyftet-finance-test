@@ -6,6 +6,7 @@ import {
   Package, Plus, ReceiptText, RefreshCw, Repeat, Search, Trash2, Users, WalletCards
 } from "lucide-react";
 import { api, post } from "./api";
+import { copyFeedbackText, copyTextToClipboard, type CopyState } from "./lib/clipboard";
 import "./styles.css";
 
 type Customer = {
@@ -527,6 +528,7 @@ function CustomerDetail() {
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
   const [customerOrderLink, setCustomerOrderLink] = useState("");
+  const [customerOrderCopyState, setCustomerOrderCopyState] = useState<CopyState>("IDLE");
   const load = () => api<any>(`/api/customers/${id}`).then(setData);
   useEffect(() => { load().catch((err)=>setError(err.message)); }, [id]);
   if (error) return <ErrorNotice message={error}/>;
@@ -536,8 +538,11 @@ function CustomerDetail() {
   async function createOrderLink(orderId: string) {
     const result = await post<{ url: string; expires_at: string }>(`/api/sales-orders/${orderId}/customer-session`);
     setCustomerOrderLink(result.url);
-    await navigator.clipboard?.writeText(result.url);
+    setCustomerOrderCopyState("IDLE");
     await load();
+  }
+  async function copyCustomerOrderLink() {
+    setCustomerOrderCopyState(await copyTextToClipboard(customerOrderLink));
   }
   return <>
     <PageHead title={c.name} subtitle="Kunddetalj med offerter, order, fakturor, abonnemang och audit."
@@ -564,7 +569,7 @@ function CustomerDetail() {
         {data.offers.map((offer:any)=><tr key={offer.id}><td><Link to={`/offers/${offer.id}`}>{offer.title || "Offert"}</Link><small>{offer.id}</small></td><td>{displayDate(offer.offer_date)}</td><td>{money(offer.total)}</td><td><Status value={offer.status}/></td></tr>)}
         {!data.offers.length && <tr><td colSpan={4}><EmptyState title="Inga offerter" text="Skapa en offert när kunden ska få ett kommersiellt förslag." /></td></tr>}
       </tbody></table></Card>
-      <Card><h3>Sales orders</h3>{customerOrderLink && <div className="copyNotice"><strong>Kundlänk kopierad</strong><input readOnly value={customerOrderLink}/></div>}<table><thead><tr><th>Order</th><th>Engång</th><th>MRR</th><th>Onboarding</th><th>Status</th><th></th></tr></thead><tbody>
+      <Card><h3>Sales orders</h3>{customerOrderLink && <div className="copyNotice"><strong>Kundlänken är redo</strong><input readOnly value={customerOrderLink} onFocus={(event)=>event.currentTarget.select()}/><div className="copyActions"><button className="ghost small" onClick={copyCustomerOrderLink}>Kopiera länk</button><a className="button ghost small" href={customerOrderLink} target="_blank" rel="noopener noreferrer">Öppna kundvy</a></div>{customerOrderCopyState !== "IDLE" && <small>{copyFeedbackText(customerOrderCopyState)}</small>}</div>}<table><thead><tr><th>Order</th><th>Engång</th><th>MRR</th><th>Onboarding</th><th>Status</th><th></th></tr></thead><tbody>
         {data.orders.map((order:any)=>{
           const latestSession = order.customer_order_sessions?.[0];
           return <tr key={order.id}><td>{order.id}<small>{displayDate(order.created_at)}</small></td><td>{moneyMinor(order.one_time_total_minor)}</td><td>{moneyMinor(order.recurring_monthly_minor)}</td><td><Status value={latestSession?.status || "NOT SENT"}/><small>{latestSession ? `Giltig till ${displayDate(latestSession.expires_at)}` : "Ingen kundlänk"}</small></td><td><Status value={order.status}/></td><td><button className="small ghost" onClick={()=>createOrderLink(order.id)}>Skapa kundlänk</button></td></tr>;
@@ -601,6 +606,7 @@ function Offers() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [open, setOpen] = useState(false);
+  const [signLink, setSignLink] = useState<{ offerId: string; url: string; copyState: CopyState } | null>(null);
   const [editorRows, setEditorRows] = useState<OfferEditorRow[]>([newOfferRow()]);
   const load = async () => { setRows(await api("/api/offers")); setCustomers(await api("/api/customers")); setProducts(await api("/api/products")); };
   useEffect(() => { load().catch(console.error); }, []);
@@ -644,6 +650,14 @@ function Offers() {
       rows: payloadRows
     }); setOpen(false); setEditorRows([newOfferRow()]); await load();
   }
+  async function createSignLink(offerId: string) {
+    const result:any = await post(`/api/offers/${offerId}/sign-link`);
+    setSignLink({ offerId, url: result.url, copyState: "IDLE" });
+  }
+  async function copySignLink() {
+    if (!signLink) return;
+    setSignLink({ ...signLink, copyState: await copyTextToClipboard(signLink.url) });
+  }
   return <>
     <PageHead title="Offerter" subtitle="Skapa lokalt, synka till Fortnox, acceptera och konvertera till faktura."
       action={<button onClick={()=>setOpen(!open)}>Ny offert</button>} />
@@ -682,13 +696,14 @@ function Offers() {
         <div className="totalTile"><span>Årspris återkommande</span><strong>{moneyMinor(totals.recurringMonth.gross * 12 + totals.recurringYear.gross)}</strong><small>Månadsrader annualiserade plus årsintervall</small></div>
       </div>
     </form></Card>}
+    {signLink && <Card><div className="copyNotice"><strong>Signeringslänken är redo</strong><input readOnly value={signLink.url} onFocus={(event)=>event.currentTarget.select()}/><div className="copyActions"><button className="ghost small" onClick={copySignLink}>Kopiera länk</button><a className="button ghost small" href={signLink.url} target="_blank" rel="noopener noreferrer">Öppna signering</a></div>{signLink.copyState !== "IDLE" && <small>{copyFeedbackText(signLink.copyState)}</small>}</div></Card>}
     <Card><table><thead><tr><th>Offert</th><th>Kund</th><th>Belopp</th><th>Status</th><th>Fortnox</th><th>Åtgärder</th></tr></thead><tbody>
       {rows.map(r=><tr key={r.id}><td><strong>{r.title || "Offert"}</strong><small>{r.offer_date}</small></td><td>{r.customer_name}</td>
       <td>{money(r.total)}</td><td><Status value={r.status}/></td><td>{r.fortnox_document_number || "—"}</td>
       <td><div className="rowActions">
         <Link className="button small ghost" to={`/offers/${r.id}`}>Visa</Link>
         {!r.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/offers/${r.id}/sync`); await load();}}>Synka</button>}
-        <button className="small ghost" onClick={async()=>{const d:any=await post(`/api/offers/${r.id}/sign-link`); await navigator.clipboard.writeText(d.url); alert("Signeringslänk kopierad");}}>Signeringslänk</button>
+        <button className="small ghost" onClick={()=>createSignLink(r.id)}>Signeringslänk</button>
         {r.fortnox_document_number && <button className="small" onClick={async()=>{await post(`/api/offers/${r.id}/create-invoice`); alert("Faktura skapad");}}>→ Faktura</button>}
       </div></td></tr>)}
     </tbody></table></Card>
@@ -698,6 +713,8 @@ function Offers() {
 function OfferDetail() {
   const { id } = useParams();
   const [offer, setOffer] = useState<any>(null);
+  const [acceptLink, setAcceptLink] = useState("");
+  const [acceptLinkCopyState, setAcceptLinkCopyState] = useState<CopyState>("IDLE");
   const load = () => api<any>(`/api/offers/${id}`).then(setOffer);
   useEffect(() => { load().catch(console.error); }, [id]);
   if (!offer) return <div>Hämtar…</div>;
@@ -715,9 +732,19 @@ function OfferDetail() {
   const totals = offerTotals(detailRows);
   const latestOrder = offer.orders?.[0];
   const latestAcceptance = offer.acceptances?.[0];
+  async function createAcceptLink() {
+    const result:any = await post(`/api/offers/${offer.id}/sign-link`);
+    setAcceptLink(result.url);
+    setAcceptLinkCopyState("IDLE");
+    await load();
+  }
+  async function copyAcceptLink() {
+    setAcceptLinkCopyState(await copyTextToClipboard(acceptLink));
+  }
   return <>
     <PageHead title={offer.title || "Offert"} subtitle={`${offer.customer_name} · ${offer.status}`}
-      action={<button onClick={async()=>{const d:any=await post(`/api/offers/${offer.id}/sign-link`); await navigator.clipboard.writeText(d.url); await load(); alert("Signeringslänk kopierad");}}>Skapa acceptlänk</button>} />
+      action={<button onClick={createAcceptLink}>Skapa acceptlänk</button>} />
+    {acceptLink && <Card><div className="copyNotice"><strong>Acceptlänken är redo</strong><input readOnly value={acceptLink} onFocus={(event)=>event.currentTarget.select()}/><div className="copyActions"><button className="ghost small" onClick={copyAcceptLink}>Kopiera länk</button><a className="button ghost small" href={acceptLink} target="_blank" rel="noopener noreferrer">Öppna signering</a></div>{acceptLinkCopyState !== "IDLE" && <small>{copyFeedbackText(acceptLinkCopyState)}</small>}</div></Card>}
     <div className="metricGrid">
       <Card><span>Engångskostnad</span><strong>{moneyMinor(totals.oneTime.gross)}</strong><small>exkl. moms {moneyMinor(totals.oneTime.net)}</small></Card>
       <Card><span>Återkommande / mån</span><strong>{moneyMinor(totals.recurringMonthlyEquivalent.gross)}</strong><small>månads-ekvivalent inkl. moms</small></Card>
@@ -851,6 +878,7 @@ function ContractFlowWorkspace() {
   const [products, setProducts] = useState<Product[]>([]);
   const [error, setError] = useState("");
   const [customerLink, setCustomerLink] = useState("");
+  const [copyState, setCopyState] = useState<CopyState>("IDLE");
   const [saving, setSaving] = useState(false);
   const [company, setCompany] = useState<any>({});
   const [contact, setContact] = useState<any>({});
@@ -927,12 +955,16 @@ function ContractFlowWorkspace() {
       setRows(hydrateFlowRows((result.draft?.items ?? []).map(flowItemToEditorRow), priceOptions));
       const link = result.customer_order_url || "";
       setCustomerLink(link);
-      if (link) await navigator.clipboard?.writeText(link);
+      setCopyState("IDLE");
     } catch (err:any) {
       setError(err.message);
     } finally {
       setSaving(false);
     }
+  }
+  async function copyCustomerLink() {
+    if (!customerLink) return;
+    setCopyState(await copyTextToClipboard(customerLink));
   }
   const steps = [
     ["Kunduppgifter", !missing.some((m:any)=>String(m.field).startsWith("company") || String(m.field).startsWith("contact"))],
@@ -1008,8 +1040,8 @@ function ContractFlowWorkspace() {
             {flow.sales_order_id && <Link to={flow.order?.offer_id ? `/offers/${flow.order.offer_id}` : "#"}><FileCheck2 size={15}/><span>{flow.order?.offer_id || "Offert"}</span><Status value={flow.customer_order_session?.signed_at ? "Signerad" : "Skickad"}/></Link>}
             {flow.invoices?.map((invoice:any)=><Link key={invoice.id} to={`/invoices/${invoice.id}`}><FileText size={15}/><span>{invoice.invoice_number || invoice.id}</span><Status value={invoice.status}/></Link>)}
           </div>}
-          {customerLink && <div className="copyNotice"><strong>Kundlänk kopierad</strong><input readOnly value={customerLink}/><button className="ghost small" onClick={()=>navigator.clipboard?.writeText(customerLink)}>Kopiera länk</button><button className="ghost small" disabled>Skicka via e-post</button></div>}
-          {flow.customer_order_session && !customerLink && <div className="copyNotice"><strong>Väntar på kund</strong><small>Sessionen finns. Öppna länken från senast kopierade länk eller skapa ny avtalsversion vid ändringar.</small></div>}
+          {customerLink && <div className="copyNotice"><strong>Kundlänken är redo</strong><input readOnly value={customerLink} onFocus={(event)=>event.currentTarget.select()}/><div className="copyActions"><button className="ghost small" onClick={copyCustomerLink}>Kopiera länk</button><a className="button ghost small" href={customerLink} target="_blank" rel="noopener noreferrer">Öppna kundvy</a><button className="ghost small" disabled>Skicka via e-post</button></div>{copyState !== "IDLE" && <small>{copyFeedbackText(copyState)}</small>}</div>}
+          {flow.customer_order_session && !customerLink && <div className="copyNotice"><strong>Kundsession finns</strong><small>Sessionen finns redan. Skapa ingen ny session om inte avtalsversionen ändras senare.</small></div>}
         </Card>
         {flow.status === "COMPLETED" && <Card className="successPanel">
           <h3>Affären är klar</h3>
