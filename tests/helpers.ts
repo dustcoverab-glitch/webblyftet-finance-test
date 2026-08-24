@@ -82,6 +82,7 @@ export async function resetTables(db = env.DB): Promise<void> {
       address1 TEXT,
       zip TEXT,
       city TEXT,
+      country TEXT DEFAULT 'SE',
       stripe_customer_id TEXT,
       sync_status TEXT NOT NULL DEFAULT 'LOCAL_ONLY',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

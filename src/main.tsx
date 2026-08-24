@@ -724,6 +724,14 @@ function OfferDetail() {
       <Card><span>Acceptans</span><strong>{latestAcceptance ? "Accepterad" : offer.status}</strong><small>{offer.accepted_by_email || "Ingen acceptans ännu"}</small></Card>
       <Card><span>Order</span><strong>{latestOrder?.status ?? "Ej skapad"}</strong><small>{latestOrder?.id ?? "Skapas vid acceptans"}</small></Card>
     </div>
+    <Card className="documentPreviewPanel">
+      <div className="panelHead"><div><h3>Dokument</h3><p>Förhandsgranska exakt kundens offert och ett Webblyftet-brandat offertmail innan utskick.</p></div></div>
+      <div className="documentActions">
+        <a className="button ghost" href={`/api/offers/${offer.id}/document`} target="_blank" rel="noreferrer">Förhandsgranska offert</a>
+        <a className="button ghost" href={`/api/offers/${offer.id}/document?format=email`} target="_blank" rel="noreferrer">Förhandsgranska mail</a>
+        {offer.versions?.[0] && <span className="docVersion">Senaste version: {offer.versions[0].version_number}</span>}
+      </div>
+    </Card>
     <div className="twoCol">
       <Card><h3>Engångsposter</h3><OfferRowsTable rows={oneTimeRows}/></Card>
       <Card><h3>Abonnemangsposter</h3><OfferRowsTable rows={recurringRows}/></Card>
@@ -928,11 +936,15 @@ function ContractFlowWorkspace() {
   }
   const steps = [
     ["Kunduppgifter", !missing.some((m:any)=>String(m.field).startsWith("company") || String(m.field).startsWith("contact"))],
-    ["Affär", !missing.some((m:any)=>m.field === "items")],
-    ["Kundlänk", Boolean(flow.customer_order_session_id)],
-    ["Signering", Boolean(flow.customer_order_session?.signed_at)],
-    ["Betalmetod", Boolean(flow.customer_order_session?.payment_method_id)],
-    ["Aktivering", flow.status === "COMPLETED"]
+    ["Offert skapad", Boolean(flow.sales_order_id)],
+    ["Offert skickad", Boolean(flow.customer_order_session_id)],
+    ["Kunden öppnade", Boolean(flow.customer_order_session?.opened_at)],
+    ["Signerad", Boolean(flow.customer_order_session?.signed_at)],
+    ["Betalmetod registrerad", Boolean(flow.customer_order_session?.payment_method_id) || !flow.subscriptions?.length],
+    ["Abonnemang aktiverat", !flow.subscriptions?.length || flow.subscriptions?.some((sub:any)=>String(sub.status).toUpperCase() === "ACTIVE")],
+    ["Faktura skapad", Boolean(flow.invoices?.length)],
+    ["Faktura skickad", flow.invoices?.some((invoice:any)=>invoice.fortnox_document_number || String(invoice.status).toUpperCase() === "SENT")],
+    ["Affären klar", flow.status === "COMPLETED"]
   ] as const;
   return <>
     <PageHead title="Avtalskedja" subtitle={`${flow.seller_name || "Säljare"} · ${flow.meeting_id || "Simulerat möte"}`}
@@ -991,6 +1003,11 @@ function ContractFlowWorkspace() {
             <div><span>Order</span><strong>{flow.sales_order_id || "Ej skapad"}</strong></div>
             <div><span>Session</span><strong>{flow.customer_order_session_id || "Ej skapad"}</strong></div>
           </div>
+          {(flow.invoices?.length || flow.sales_order_id) && <div className="documentHistory">
+            <h4>Dokument</h4>
+            {flow.sales_order_id && <Link to={flow.order?.offer_id ? `/offers/${flow.order.offer_id}` : "#"}><FileCheck2 size={15}/><span>{flow.order?.offer_id || "Offert"}</span><Status value={flow.customer_order_session?.signed_at ? "Signerad" : "Skickad"}/></Link>}
+            {flow.invoices?.map((invoice:any)=><Link key={invoice.id} to={`/invoices/${invoice.id}`}><FileText size={15}/><span>{invoice.invoice_number || invoice.id}</span><Status value={invoice.status}/></Link>)}
+          </div>}
           {customerLink && <div className="copyNotice"><strong>Kundlänk kopierad</strong><input readOnly value={customerLink}/><button className="ghost small" onClick={()=>navigator.clipboard?.writeText(customerLink)}>Kopiera länk</button><button className="ghost small" disabled>Skicka via e-post</button></div>}
           {flow.customer_order_session && !customerLink && <div className="copyNotice"><strong>Väntar på kund</strong><small>Sessionen finns. Öppna länken från senast kopierade länk eller skapa ny avtalsversion vid ändringar.</small></div>}
         </Card>
@@ -1177,6 +1194,13 @@ function InvoiceDetail() {
         <div><span>Statuskedja</span><Status value={invoice.status}/></div>
       </div></Card>
     </div>
+    <Card className="documentPreviewPanel">
+      <div className="panelHead"><div><h3>Fakturadokument</h3><p>Samma Webblyftet-dokumentsystem som offerten, med betalningsuppgifter och testmarkering.</p></div></div>
+      <div className="documentActions">
+        <a className="button ghost" href={`/api/invoices/${invoice.id}/document`} target="_blank" rel="noreferrer">Visa faktura</a>
+        <a className="button ghost" href={`/api/invoices/${invoice.id}/document?format=email`} target="_blank" rel="noreferrer">Förhandsgranska fakturamejl</a>
+      </div>
+    </Card>
     <Card><h3>Invoice rows</h3><table><thead><tr><th>Rad</th><th>Typ</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>
       {invoice.rows?.map((row:any)=><tr key={row.id}><td>{row.description}<small>{row.product_id || "Fri rad"}</small></td><td>{row.billing_type || "ONE_TIME"}<small>{row.billing_interval || ""}</small></td><td>{row.quantity} {row.unit || ""}</td><td>{moneyMinor(row.unit_price_minor ?? parseMoneyInputToMinor(row.unit_price))}</td><td>{row.discount_percent ?? 0}%</td><td>{row.vat_percent ?? 0}%</td><td><strong>{moneyMinor(rowTotalMinor(row))}</strong></td></tr>)}
       {!invoice.rows?.length && <tr><td colSpan={7} className="muted">Inga fakturarader.</td></tr>}
@@ -1509,14 +1533,20 @@ function CustomerOrderPage() {
       <Status value={session.status}/>
     </header>
     <section className="customerOrderHero">
-      <div><small>Order till {snapshot.customer?.name}</small><h1>{snapshot.offer?.title || "Din Webblyftet-order"}</h1><p>Granska ordern, signera och registrera betalmetod för abonnemangsposter.</p></div>
+      <div><small>Offert och beställningsunderlag till {snapshot.customer?.name}</small><h1>{snapshot.offer?.title || "Din Webblyftet-order"}</h1><p>Granska offert, villkor och orderrader. Därefter signerar du och registrerar testkort för abonnemangsposter.</p></div>
       <div className="customerOrderHash"><span>Dokumenthash</span><code>{session.document_hash.slice(0, 20)}…</code><small>Signerad snapshot är låst.</small></div>
     </section>
     <div className="customerSteps">{steps.map((label, index)=><div key={label} className={`customerStep ${index <= step ? "active" : ""}`}><span>{index + 1}</span><strong>{label}</strong></div>)}</div>
     {message && <ErrorNotice message={message}/>}
     <div className="customerOrderGrid">
       <Card className="customerOrderMain">
-        <h2>Granska order</h2>
+        <h2>Granska offert och order</h2>
+        <div className="customerIdentityGrid">
+          <div><span>Kundföretag</span><strong>{snapshot.customer?.name || "—"}</strong><small>{snapshot.customer?.org_number || "Org.nr saknas"}</small></div>
+          <div><span>Kontakt</span><strong>{snapshot.customer?.contact_name || snapshot.customer?.name || "—"}</strong><small>{snapshot.customer?.email || "E-post saknas"}</small></div>
+          <div><span>Fakturaadress</span><strong>{snapshot.customer?.address1 || "Adress saknas"}</strong><small>{[snapshot.customer?.zip, snapshot.customer?.city].filter(Boolean).join(" ") || "Postort saknas"}</small></div>
+          <div><span>Villkor</span><strong>{snapshot.offer?.terms_version || "Demo-standardvillkor"}</strong><small>Finance Test · demo/test-signering</small></div>
+        </div>
         <div className="customerTotals">
           <div><span>Engångskostnad</span><strong>{moneyMinor(snapshot.totals?.one_time_total_minor)}</strong><small>Moms {moneyMinor(snapshot.totals?.one_time_vat_minor)}</small></div>
           <div><span>Återkommande / mån</span><strong>{moneyMinor(snapshot.totals?.recurring_monthly_total_minor)}</strong><small>Moms {moneyMinor(snapshot.totals?.recurring_monthly_vat_minor)}</small></div>
@@ -1524,6 +1554,10 @@ function CustomerOrderPage() {
         </div>
         <h3>Engångsposter</h3><CustomerOrderRows rows={oneTimeRows}/>
         <h3>Abonnemangsposter</h3><CustomerOrderRows rows={recurringRows}/>
+        <div className="termsCallout">
+          <strong>Viktiga villkor</strong>
+          <p>Priser anges exklusive moms om inget annat framgår. Löpande tjänster debiteras enligt vald period och registrerad betalmetod får användas för återkommande debiteringar av avtalade tjänster. Detta är en demo/test-signering i Finance Test.</p>
+        </div>
         {!session.reviewed_at && <button disabled={busy} onClick={review}>Jag har granskat ordern</button>}
       </Card>
       <aside className="customerOrderSide">
@@ -1551,7 +1585,7 @@ function CustomerOrderPage() {
           {session.completed_at ? <div className="goodState"><CheckCircle2 size={18}/><span>Ordern är klar</span></div> :
             <button disabled={busy || session.requirements.signing_required || session.requirements.payment_method_required} onClick={activate}>Aktivera order</button>}
           <div className="summaryList">
-            <div><span>Faktura</span><Status value={session.invoices?.[0]?.status || "Ej skapad"}/></div>
+            <div><span>Faktura</span>{session.invoices?.[0] ? <a href={`/api/invoices/${session.invoices[0].id}/document`} target="_blank" rel="noreferrer">{session.invoices[0].invoice_number || "Visa faktura"}</a> : <Status value="Ej skapad"/>}</div>
             <div><span>Subscription</span><Status value={session.subscriptions?.[0]?.status || "Ej aktuellt"}/></div>
             <div><span>Länk giltig till</span><strong>{displayDate(session.expires_at)}</strong></div>
           </div>

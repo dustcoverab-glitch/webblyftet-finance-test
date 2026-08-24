@@ -3,7 +3,14 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { all, id, one } from "./lib/db";
 import { errorJson, oauthErrorPage } from "./lib/errors";
-import { escapeHtml } from "./lib/html";
+import {
+  renderInvoiceDocument,
+  renderInvoiceEmailPreview,
+  renderOfferDocument,
+  renderOfferEmailPreview,
+  webblyftetCompanyProfile,
+  type DocumentLine
+} from "./documents";
 import {
   createPrice,
   createProduct,
@@ -503,6 +510,97 @@ const offerSchema = z.object({
   rows: z.array(rowSchema).min(1)
 });
 
+function moneyToMinor(value: unknown): number {
+  return Math.round(Number(value ?? 0) * 100);
+}
+
+function rowUnitPriceMinor(row: any): number {
+  return Number(row.unit_price_minor ?? moneyToMinor(row.unit_price));
+}
+
+function documentRows(rows: any[]): DocumentLine[] {
+  return rows.map((row) => ({
+    id: row.id,
+    description: row.description,
+    article_number: row.article_number ?? null,
+    quantity: Number(row.quantity ?? 0),
+    unit: row.unit ?? "st",
+    unit_price_minor: rowUnitPriceMinor(row),
+    discount_percent: Number(row.discount_percent ?? 0),
+    vat_percent: Number(row.vat_percent ?? 25),
+    billing_type: row.billing_type ?? "ONE_TIME",
+    billing_interval: row.billing_interval ?? null
+  }));
+}
+
+async function offerDocumentInput(env: Env, offerId: string, versionNumber?: string | number | null) {
+  const offer = await getOfferDetail(env, offerId);
+  if (!offer) return null;
+  const customer = await one<any>(env.DB, "SELECT * FROM customers WHERE id=?", offer.customer_id);
+  return {
+    document_number: offer.fortnox_document_number || offer.id,
+    title: offer.title || "Offert",
+    document_date: offer.offer_date,
+    valid_until: offer.expire_date,
+    currency: offer.currency ?? "SEK",
+    customer: {
+      name: customer?.name ?? offer.customer_name,
+      org_number: customer?.org_number ?? null,
+      email: customer?.email ?? null,
+      phone: customer?.phone ?? null,
+      address1: customer?.address1 ?? null,
+      zip: customer?.zip ?? null,
+      city: customer?.city ?? null,
+      country: customer?.country ?? "Sverige",
+      contact_name: offer.accepted_by_name ?? null
+    },
+    seller_name: "Webblyftet",
+    rows: documentRows(offer.rows ?? []),
+    remarks: offer.remarks ?? "",
+    version_number: versionNumber ?? offer.versions?.[0]?.version_number ?? null,
+    company: webblyftetCompanyProfile(env)
+  };
+}
+
+async function invoiceDocumentInput(env: Env, invoiceId: string) {
+  const invoice = await getInvoiceDetail(env, invoiceId);
+  if (!invoice) return null;
+  const rows = documentRows(invoice.rows ?? []);
+  const subtotal = Number(invoice.subtotal_minor ?? moneyToMinor(invoice.subtotal));
+  const vat = Number(invoice.vat_total_minor ?? moneyToMinor(invoice.vat_total));
+  const total = Number(invoice.total_minor ?? moneyToMinor(invoice.total));
+  const balance = Number(invoice.balance_minor ?? moneyToMinor(invoice.balance ?? invoice.total));
+  return {
+    document_number: invoice.invoice_number || invoice.fortnox_document_number || invoice.id,
+    invoice_date: invoice.invoice_date,
+    due_date: invoice.due_date,
+    payment_terms_days: 30,
+    currency: invoice.currency ?? "SEK",
+    customer: {
+      name: invoice.customer_name,
+      org_number: invoice.customer_org_number ?? null,
+      email: invoice.customer_email ?? null,
+      phone: invoice.customer_phone ?? null,
+      address1: invoice.customer_address1 ?? null,
+      zip: invoice.customer_zip ?? null,
+      city: invoice.customer_city ?? null,
+      country: "Sverige"
+    },
+    rows,
+    subtotal_minor: subtotal,
+    vat_total_minor: vat,
+    total_minor: total,
+    balance_minor: balance,
+    roundoff_minor: total - subtotal - vat,
+    status: invoice.status,
+    source_offer_reference: invoice.source_offer?.title || invoice.source_offer_title || invoice.source_offer_id || null,
+    sales_order_reference: invoice.sales_order_id ?? null,
+    fortnox_document_number: invoice.fortnox_document_number ?? null,
+    seller_name: "Webblyftet",
+    company: webblyftetCompanyProfile(env)
+  };
+}
+
 const contractFlowItemSchema = rowSchema.extend({
   source: z.enum(["PRODUCT_PRICE", "FREE_ROW"]).optional()
 });
@@ -574,6 +672,15 @@ app.get("/api/offers/:id", async (c) => {
   return c.json(offer);
 });
 
+app.get("/api/offers/:id/document", async (c) => {
+  const input = await offerDocumentInput(c.env, c.req.param("id"));
+  if (!input) return c.json({ error: "Offer not found" }, 404);
+  if (c.req.query("format") === "email") {
+    return c.json({ subject: "Din offert från Webblyftet", body: renderOfferEmailPreview(input) });
+  }
+  return c.html(renderOfferDocument(c.env, input));
+});
+
 app.post("/api/offers", zValidator("json", offerSchema), async (c) => {
   return c.json(await createBusinessOffer(c.env, c.req.valid("json")), 201);
 });
@@ -603,34 +710,28 @@ app.get("/sign/:token", async (c) => {
   const token = await getOfferForToken(c.env, c.req.param("token"));
   if (!token) return c.text("Ogiltig eller utgången offertlänk.", 404);
   const snapshot = token.snapshot;
-  const money = (minor: number) => escapeHtml((minor / 100).toLocaleString("sv-SE", { style: "currency", currency: snapshot.offer.currency ?? "SEK" }));
-  const rowNet = (row: any) => Math.round(row.unit_price_minor * Number(row.quantity) * (1 - Number(row.discount_percent ?? 0) / 100));
-  const rowVat = (row: any) => Math.round(rowNet(row) * (Number(row.vat_percent ?? 0) / 100));
-  const oneTimeRows = snapshot.rows.filter((row: any) => row.billing_type === "ONE_TIME");
-  const recurringRows = snapshot.rows.filter((row: any) => row.billing_type === "RECURRING");
-  const sum = (rows: any[], fn: (row: any) => number) => rows.reduce((total, row) => total + fn(row), 0);
-  const oneTimeNet = sum(oneTimeRows, rowNet);
-  const oneTimeVat = sum(oneTimeRows, rowVat);
-  const recurringMonthlyNet = sum(recurringRows, (row) => Math.round(rowNet(row) / (row.billing_interval === "YEAR" ? 12 : 1)));
-  const recurringMonthlyVat = sum(recurringRows, (row) => Math.round(rowVat(row) / (row.billing_interval === "YEAR" ? 12 : 1)));
-  const title = escapeHtml(snapshot.offer.title || "Offert");
-  const customerName = escapeHtml(snapshot.offer.customer_name);
-  const remarks = escapeHtml(snapshot.offer.remarks || "");
-  const validUntil = escapeHtml(snapshot.offer.expire_date || "Ej angivet");
-  const rowsHtml = (rows: any[]) => rows.map((row: any) => `<tr><td><strong>${escapeHtml(row.description)}</strong><small>${escapeHtml(row.billing_type)}${row.billing_interval ? ` / ${escapeHtml(row.billing_interval)}` : ""}</small></td><td>${escapeHtml(String(row.quantity))}</td><td>${money(row.unit_price_minor)}</td><td>${escapeHtml(String(row.discount_percent ?? 0))}%</td><td>${escapeHtml(String(row.vat_percent ?? 0))}%</td><td>${money(rowNet(row) + rowVat(row))}</td></tr>`).join("");
-  return c.html(`<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-  <title>Acceptera offert</title><style>:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17221f;background:#f5f4f0}body{margin:0}.shell{max-width:980px;margin:0 auto;padding:34px 18px 48px}.brand{display:flex;align-items:center;gap:12px;margin-bottom:26px}.mark{width:42px;height:42px;border-radius:10px;background:#d4f36b;display:grid;place-items:center;font-weight:900}.brand span{display:block;color:#69736f;font-size:13px;margin-top:2px}.hero{background:#17221f;color:#fff;border-radius:18px;padding:30px;margin-bottom:18px}.hero small{color:#d4f36b;font-weight:750;letter-spacing:.12em}.hero h1{font-size:38px;line-height:1.05;margin:12px 0 10px}.hero p{color:#ccd5d0;margin:0}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}.tile,.card{background:#fff;border:1px solid #dddcd6;border-radius:14px;padding:18px}.tile span{display:block;color:#6d7671;font-size:12px}.tile strong{font-size:24px;display:block;margin-top:8px}.card{margin-bottom:18px}.card h2{font-size:18px;margin:0 0 12px}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;border-bottom:1px solid #e9e7e0;padding:11px 8px;vertical-align:top}td small{display:block;color:#73807a;margin-top:3px}.note{color:#59645f;line-height:1.55}.accept{display:grid;grid-template-columns:1fr 1fr;gap:12px}.accept label{font-weight:650;font-size:13px}.accept input{width:100%;box-sizing:border-box;padding:12px;margin:7px 0 14px;border:1px solid #cfd1cb;border-radius:9px}.check{grid-column:1/-1;color:#3d4843}.check input{width:auto;margin-right:8px}button{padding:13px 18px;background:#17221f;color:#fff;border:0;border-radius:9px;font-weight:750;cursor:pointer}.fine{color:#6d7671;font-size:12px;line-height:1.5}@media(max-width:760px){.summary,.accept{grid-template-columns:1fr}.hero h1{font-size:30px}table{font-size:12px}}</style></head><body>
-  <main class="shell"><div class="brand"><div class="mark">W</div><div><strong>Webblyftet</strong><span>Finance Test · Offertacceptans</span></div></div>
-  <section class="hero"><small>OFFERT · VERSION ${escapeHtml(String(token.version_number))}</small><h1>${title}</h1><p>Kund: ${customerName} · Giltig till: ${validUntil}</p></section>
-  <section class="summary"><div class="tile"><span>Engångskostnad inkl. moms</span><strong>${money(oneTimeNet + oneTimeVat)}</strong></div><div class="tile"><span>Återkommande per månad inkl. moms</span><strong>${money(recurringMonthlyNet + recurringMonthlyVat)}</strong></div><div class="tile"><span>Total moms engång</span><strong>${money(oneTimeVat)}</strong></div></section>
-  <section class="card"><h2>Engångsposter</h2><table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>${rowsHtml(oneTimeRows) || `<tr><td colspan="6">Inga engångsposter.</td></tr>`}</tbody></table></section>
-  <section class="card"><h2>Abonnemangsposter</h2><table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>${rowsHtml(recurringRows) || `<tr><td colspan="6">Inga abonnemangsposter.</td></tr>`}</tbody></table></section>
-  ${remarks ? `<section class="card"><h2>Kommentar</h2><p class="note">${remarks}</p></section>` : ""}
-  <section class="card"><h2>Acceptera offert</h2><form method="post" class="accept"><div><label>Namn</label><input name="name" required></div>
-  <div><label>E-post</label><input type="email" name="email" required></div>
-  <label class="check"><input type="checkbox" required> Jag accepterar offerten och villkoren.</label>
-  <button type="submit">Acceptera offert</button></form>
-  <p class="fine">Testsignering med audit trail. Detta är inte BankID eller kvalificerad elektronisk signatur.</p></section></main></body></html>`);
+  return c.html(renderOfferDocument(c.env, {
+    document_number: snapshot.offer.fortnox_document_number || snapshot.offer.id,
+    title: snapshot.offer.title || "Offert",
+    document_date: snapshot.offer.offer_date,
+    valid_until: snapshot.offer.expire_date,
+    currency: snapshot.offer.currency ?? "SEK",
+    customer: {
+      name: snapshot.offer.customer_name,
+      contact_name: snapshot.offer.customer_contact_name ?? null,
+      email: snapshot.offer.customer_email ?? null,
+      org_number: snapshot.offer.customer_org_number ?? null,
+      address1: snapshot.offer.customer_address1 ?? null,
+      zip: snapshot.offer.customer_zip ?? null,
+      city: snapshot.offer.customer_city ?? null,
+      country: "Sverige"
+    },
+    rows: documentRows(snapshot.rows ?? []),
+    remarks: snapshot.offer.remarks ?? "",
+    version_number: token.version_number,
+    test_label: "Finance Test · demo/test-signering",
+    acceptFormHtml: `<h2>Acceptera offert</h2><form method="post" class="accept"><div><label>Namn</label><input name="name" required></div><div><label>E-post</label><input type="email" name="email" required></div><label class="check"><input type="checkbox" required> Jag accepterar offerten, priserna och villkorsversionen ovan.</label><button type="submit">Acceptera offert</button></form><p class="fine">Testsignering med audit trail. Detta ar inte BankID eller kvalificerad elektronisk signatur.</p>`
+  }));
 });
 
 app.post("/sign/:token", async (c) => {
@@ -670,6 +771,15 @@ app.get("/api/invoices/:id", async (c) => {
   const detail = await getInvoiceDetail(c.env, c.req.param("id"));
   if (!detail) return c.json({ error: "Invoice not found" }, 404);
   return c.json(detail);
+});
+
+app.get("/api/invoices/:id/document", async (c) => {
+  const input = await invoiceDocumentInput(c.env, c.req.param("id"));
+  if (!input) return c.json({ error: "Invoice not found" }, 404);
+  if (c.req.query("format") === "email") {
+    return c.json({ subject: "Din faktura från Webblyftet", body: renderInvoiceEmailPreview(input) });
+  }
+  return c.html(renderInvoiceDocument(c.env, input));
 });
 
 app.post("/api/invoices/pull", async (c) => {

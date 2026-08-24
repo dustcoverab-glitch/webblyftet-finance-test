@@ -12,12 +12,19 @@ export type SigningSnapshot = {
     name: string;
     org_number?: string | null;
     email?: string | null;
+    phone?: string | null;
+    address1?: string | null;
+    zip?: string | null;
+    city?: string | null;
+    country?: string | null;
+    contact_name?: string | null;
   };
   offer: {
     id: string;
     title?: string | null;
     version_id: string;
     version_number?: number | null;
+    terms_version?: string | null;
   };
   rows: Array<{
     id: string;

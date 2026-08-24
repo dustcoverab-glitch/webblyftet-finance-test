@@ -89,7 +89,8 @@ async function buildSnapshot(env: Env, salesOrderId: string): Promise<SigningSna
   const order = await one<any>(
     env.DB,
     `SELECT so.*, c.name customer_name, c.org_number customer_org_number, c.email customer_email,
-      o.title offer_title, ov.version_number
+      c.phone customer_phone, c.address1 customer_address1, c.zip customer_zip, c.city customer_city,
+      c.country customer_country, o.title offer_title, ov.version_number
      FROM sales_orders so
      JOIN customers c ON c.id=so.customer_id
      JOIN offers o ON o.id=so.offer_id
@@ -135,13 +136,20 @@ async function buildSnapshot(env: Env, salesOrderId: string): Promise<SigningSna
       id: order.customer_id,
       name: order.customer_name,
       org_number: order.customer_org_number ?? null,
-      email: order.customer_email ?? null
+      email: order.customer_email ?? null,
+      phone: order.customer_phone ?? null,
+      address1: order.customer_address1 ?? null,
+      zip: order.customer_zip ?? null,
+      city: order.customer_city ?? null,
+      country: order.customer_country ?? "SE",
+      contact_name: order.customer_name ?? null
     },
     offer: {
       id: order.offer_id,
       title: order.offer_title,
       version_id: order.offer_version_id,
-      version_number: order.version_number ?? null
+      version_number: order.version_number ?? null,
+      terms_version: "WEBBLYFTET-DEMO-TERMS-2026-08-24"
     },
     rows: normalizedRows,
     totals: {

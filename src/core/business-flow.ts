@@ -192,11 +192,19 @@ export async function createOfferVersion(env: Env, offerId: string) {
       id: detail.id,
       customer_id: detail.customer_id,
       customer_name: detail.customer_name,
+      customer_org_number: detail.customer_org_number ?? null,
+      customer_email: detail.customer_email ?? null,
+      customer_phone: detail.customer_phone ?? null,
+      customer_address1: detail.customer_address1 ?? null,
+      customer_zip: detail.customer_zip ?? null,
+      customer_city: detail.customer_city ?? null,
+      customer_country: detail.customer_country ?? "SE",
       title: detail.title,
       offer_date: detail.offer_date,
       expire_date: detail.expire_date,
       currency: detail.currency ?? "SEK",
-      remarks: detail.remarks
+      remarks: detail.remarks,
+      terms_version: "WEBBLYFTET-DEMO-TERMS-2026-08-24"
     },
     rows: snapshotRows,
     totals
@@ -491,7 +499,10 @@ async function reserveInvoiceNumber(env: Env): Promise<string> {
 export async function getOfferDetail(env: Env, offerId: string) {
   const offer = await one<any>(
     env.DB,
-    "SELECT o.*, c.name customer_name FROM offers o JOIN customers c ON c.id=o.customer_id WHERE o.id=?",
+    `SELECT o.*, c.name customer_name, c.org_number customer_org_number, c.email customer_email,
+      c.phone customer_phone, c.address1 customer_address1, c.zip customer_zip, c.city customer_city,
+      c.country customer_country
+     FROM offers o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`,
     offerId
   );
   if (!offer) return null;
@@ -527,7 +538,8 @@ export async function getInvoiceDetail(env: Env, invoiceId: string) {
   const invoice = await one<any>(
     env.DB,
     `SELECT i.*, c.name customer_name, c.email customer_email, c.org_number customer_org_number,
-      c.phone customer_phone, c.city customer_city, o.title source_offer_title
+      c.phone customer_phone, c.address1 customer_address1, c.zip customer_zip,
+      c.city customer_city, o.title source_offer_title
      FROM invoices i
      JOIN customers c ON c.id=i.customer_id
      LEFT JOIN offers o ON o.id=i.source_offer_id
