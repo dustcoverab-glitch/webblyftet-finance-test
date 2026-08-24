@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createExecutionContext } from "cloudflare:test";
 import worker from "../src/worker";
 import { createAuthUrl } from "../src/integrations/fortnox/client";
+import { isStripeConfigured, isStripePublishableKeyConfigured } from "../src/lib/config";
 import { workerEnv } from "./helpers";
 
 describe("optional external integration configuration", () => {
@@ -26,5 +27,17 @@ describe("optional external integration configuration", () => {
       FORTNOX_CLIENT_ID: "",
       FORTNOX_CLIENT_SECRET: ""
     } as any))).rejects.toThrow("Fortnox är inte konfigurerat ännu.");
+  });
+
+  it("rejects Stripe live keys in test environment", () => {
+    expect(() => isStripeConfigured(workerEnv({
+      APP_ENV: "test",
+      STRIPE_SECRET_KEY: "sk_live_accidental"
+    } as any))).toThrow("Stripe live-nyckel får inte användas i testmiljön.");
+
+    expect(() => isStripePublishableKeyConfigured(workerEnv({
+      APP_ENV: "test",
+      STRIPE_PUBLISHABLE_KEY: "pk_live_accidental"
+    } as any))).toThrow("Stripe live publishable key får inte användas i testmiljön.");
   });
 });

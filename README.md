@@ -129,17 +129,19 @@ Inga secrets skickas till frontend. Browsern autentiseras inte med `x-admin-api-
 
 ## Cloudflare Access
 
-För deployad test/staging ska Cloudflare Access ligga framför hela testsidan.
+För deployad test/staging ska Cloudflare Access ligga framför hela testsidan. Se även `SECURITY.md`.
 
-1. Skapa en Access application i Cloudflare Zero Trust för testdomänen, till exempel `finance-test.example.se`.
+1. Skapa en Access application i Cloudflare Zero Trust för workers.dev-testdomänen.
 2. Sätt applikationens policy till de användare/grupper som får testa Finance Test.
 3. Skydda hela origin/appens path, inte bara `/api`.
-4. Se till att Worker-routen pekar på den separata test-Workern `webblyftet-finance-test`.
-5. Behåll `APP_ENV=test` i testmiljön.
+4. Skapa ett separat exakt bypass-undantag för Stripe-webhooken.
+5. Kopiera Access Application Audience (AUD) tag till `CF_ACCESS_AUD`.
+6. Sätt `CF_ACCESS_TEAM_DOMAIN` till `<team>.cloudflareaccess.com`.
+7. Behåll `APP_ENV=test` och `REQUIRE_CLOUDFLARE_ACCESS=true` i testmiljön.
 
-Workern kräver Cloudflare Access identity headers när `APP_ENV` inte är `local`. Saknas Access-header får klienten HTTP 403 med ett neutralt fel. Lokalt utvecklingsläge är undantaget för att `wrangler dev` ska fungera utan Access.
+Workern kräver och verifierar `Cf-Access-Jwt-Assertion` kryptografiskt när `APP_ENV` inte är `local` och Access är påslaget. En spoofad `cf-access-authenticated-user-email` header räcker inte. Lokalt utvecklingsläge är undantaget för att `wrangler dev` ska fungera utan Access.
 
-Enda publika route-undantaget är exakt:
+Enda publika route-undantaget i Worker-koden är exakt:
 
 ```text
 POST /webhooks/stripe

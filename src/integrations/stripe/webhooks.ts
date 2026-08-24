@@ -6,6 +6,7 @@ import { stripeClient, stripeWebhookCryptoProvider } from "./client";
 import { handledStripeEvents } from "./types";
 import { stripeWebhookSecret } from "../../lib/config";
 import { invoicePaymentFromInvoice, retrieveInvoicePaymentDetails } from "./invoice-payments";
+import { stringifyLogValue } from "../../lib/security";
 
 export async function constructStripeWebhookEvent(env: Env, rawBody: string, signature: string | null): Promise<Stripe.Event> {
   const webhookSecret = stripeWebhookSecret(env);
@@ -29,7 +30,7 @@ export async function recordIntegrationEvent(env: Env, event: Stripe.Event) {
   await env.DB.prepare(
     `INSERT OR IGNORE INTO integration_events(id,provider,provider_event_id,event_type,payload_json,status)
      VALUES (?,?,?,?,?,?)`
-  ).bind(eventId, "STRIPE", event.id, event.type, JSON.stringify(event), "RECEIVED").run();
+  ).bind(eventId, "STRIPE", event.id, event.type, stringifyLogValue(event), "RECEIVED").run();
 
   const existing = await one<any>(
     env.DB,
@@ -45,7 +46,7 @@ export async function recordIntegrationEvent(env: Env, event: Stripe.Event) {
     `UPDATE integration_events
      SET status='PROCESSING', payload_json=?, error_message=NULL, processed_at=NULL
      WHERE provider=? AND provider_event_id=? AND status IN ('RECEIVED','FAILED')`
-  ).bind(JSON.stringify(event), "STRIPE", event.id).run();
+  ).bind(stringifyLogValue(event), "STRIPE", event.id).run();
   if ((claim.meta.changes ?? 0) !== 1) {
     const row = await one<any>(
       env.DB,

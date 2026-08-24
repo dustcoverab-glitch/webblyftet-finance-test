@@ -24,6 +24,9 @@ export function workerEnv(overrides: TestEnvOverrides = {}): Env {
     STRIPE_SECRET_KEY: "test-placeholder",
     STRIPE_WEBHOOK_SECRET: "test-placeholder",
     STRIPE_PUBLISHABLE_KEY: "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
+    CF_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+    CF_ACCESS_AUD: "test-aud",
+    MAX_RECEIPT_UPLOAD_BYTES: "10485760",
     ...overrides
   } as Env;
 }
@@ -411,6 +414,11 @@ export async function resetTables(db = env.DB): Promise<void> {
       after_json TEXT,
       metadata_json TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS security_rate_limits (
+      bucket_key TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      window_start INTEGER NOT NULL
     )`
   ];
   for (const statement of statements) {
@@ -442,4 +450,5 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("DELETE FROM prices").run();
   await db.prepare("DELETE FROM products").run();
   await db.prepare("DELETE FROM customers").run();
+  await db.prepare("DELETE FROM security_rate_limits").run();
 }

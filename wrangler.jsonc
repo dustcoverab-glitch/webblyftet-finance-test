@@ -34,6 +34,9 @@
     "APP_BASE_URL": "http://localhost:8787",
     "STRIPE_PUBLISHABLE_KEY": "pk_test_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
     "REQUIRE_CLOUDFLARE_ACCESS": "false",
+    "CF_ACCESS_TEAM_DOMAIN": "REPLACE_WITH_ZERO_TRUST_TEAM.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+    "MAX_RECEIPT_UPLOAD_BYTES": "10485760",
     "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
   },
   "observability": {
@@ -67,7 +70,10 @@
         "APP_ENV": "test",
         "APP_BASE_URL": "https://webblyftet-finance-test.webblyftet-finance-test.workers.dev",
         "STRIPE_PUBLISHABLE_KEY": "pk_test_51U6ZmLL9e4dgLD86WH5KUyN7HFU9M5TaCrSTI8yptqPMr7HRNTO3zqStWovaoBcqzSzB6TaRGqpRWLMzcTPcHv8V00tQMP6XKm",
-        "REQUIRE_CLOUDFLARE_ACCESS": "false",
+        "REQUIRE_CLOUDFLARE_ACCESS": "true",
+        "CF_ACCESS_TEAM_DOMAIN": "REPLACE_WITH_ZERO_TRUST_TEAM.cloudflareaccess.com",
+        "CF_ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+        "MAX_RECEIPT_UPLOAD_BYTES": "10485760",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
     },
@@ -97,6 +103,9 @@
         "APP_BASE_URL": "https://DIN-PRODUKTIONSDOMAN",
         "STRIPE_PUBLISHABLE_KEY": "pk_live_REPLACE_WITH_STRIPE_PUBLISHABLE_KEY",
         "REQUIRE_CLOUDFLARE_ACCESS": "true",
+        "CF_ACCESS_TEAM_DOMAIN": "REPLACE_WITH_ZERO_TRUST_TEAM.cloudflareaccess.com",
+        "CF_ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+        "MAX_RECEIPT_UPLOAD_BYTES": "10485760",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
       }
     }

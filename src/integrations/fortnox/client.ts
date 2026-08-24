@@ -2,6 +2,7 @@ import { decryptString, encryptString } from "../../lib/crypto";
 import { id, one } from "../../lib/db";
 import { PublicAppError } from "../../lib/app-error";
 import { fortnoxClientId, fortnoxClientSecret, isFortnoxConfigured, requireFortnoxConfigured } from "../../lib/config";
+import { stringifyLogValue } from "../../lib/security";
 
 type Connection = {
   id: string;
@@ -15,7 +16,6 @@ type Connection = {
 const AUTH_URL = "https://apps.fortnox.se/oauth-v1/auth";
 const TOKEN_URL = "https://apps.fortnox.se/oauth-v1/token";
 const API_BASE = "https://api.fortnox.se/3";
-const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|api[_-]?key/i;
 
 export const FORTNOX_INBOX_PATHS = {
   SUPPLIER_DOCUMENT: "Inbox_s",
@@ -138,33 +138,6 @@ export async function exchangeCode(env: Env, code: string, state: string) {
   ).bind(tenantId, companyName).run();
 
   return { tenantId, companyName, scope: token.scope };
-}
-
-function sanitizeForLog(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => sanitizeForLog(item));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-        SENSITIVE_LOG_KEYS.test(key) ? "redacted" : key,
-        SENSITIVE_LOG_KEYS.test(key) ? "[REDACTED]" : sanitizeForLog(item)
-      ])
-    );
-  }
-  return value;
-}
-
-function redactSensitiveText(value: string): string {
-  return value
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(/Basic\s+[A-Za-z0-9+/=-]+/gi, "Basic [REDACTED]")
-    .replace(/("(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|secret|api[_-]?key)"\s*:\s*")([^"]*)(")/gi, "$1[REDACTED]$3")
-    .replace(/((?:access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|secret|api[_-]?key)=)[^&\s]+/gi, "$1[REDACTED]");
-}
-
-function stringifyLogValue(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") return redactSensitiveText(value);
-  return JSON.stringify(sanitizeForLog(value));
 }
 
 async function refreshIfNeeded(env: Env, connection: Connection): Promise<string> {

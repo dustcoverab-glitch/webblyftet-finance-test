@@ -39,13 +39,23 @@ import {
   syncProductToStripe
 } from "./integrations/stripe/subscriptions";
 import { constructStripeWebhookEvent, processStripeEvent } from "./integrations/stripe/webhooks";
-import { requireCloudflareAccess } from "./lib/security";
-import { isStripeConfigured, isStripePublishableKeyConfigured } from "./lib/config";
+import {
+  csrfProtection,
+  isAllowedReceiptMimeType,
+  rateLimitSensitiveRoutes,
+  requireCloudflareAccess,
+  safeReceiptContentDisposition,
+  securityHeaders
+} from "./lib/security";
+import { isStripeConfigured, isStripePublishableKeyConfigured, maxReceiptUploadBytes } from "./lib/config";
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.onError((error, c) => errorJson(c, error));
+app.use("*", securityHeaders());
 app.use("*", requireCloudflareAccess());
+app.use("*", csrfProtection());
+app.use("*", rateLimitSensitiveRoutes());
 
 app.get("/api/health", (c) => c.json({ ok: true, env: c.env.APP_ENV, now: new Date().toISOString() }));
 
@@ -561,12 +571,13 @@ app.post("/api/receipts", async (c) => {
   const form = await c.req.formData();
   const file = form.get("file");
   if (!(file instanceof File)) return c.json({ error: "file is required" }, 400);
-  if (file.size > 10 * 1024 * 1024) return c.json({ error: "Max 10 MB" }, 413);
-  const allowed = new Set(["application/pdf", "image/jpeg", "image/png", "image/tiff"]);
-  if (!allowed.has(file.type)) return c.json({ error: "Only PDF/JPG/PNG/TIFF allowed" }, 415);
+  const maxBytes = maxReceiptUploadBytes(c.env);
+  if (file.size > maxBytes) return c.json({ error: `Max ${Math.floor(maxBytes / 1024 / 1024)} MB` }, 413);
+  if (!isAllowedReceiptMimeType(file.type)) return c.json({ error: "Only PDF/JPG/PNG/TIFF allowed" }, 415);
 
   const receiptId = id("rcp");
-  const key = `receipts/${new Date().toISOString().slice(0,10)}/${receiptId}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 120) || "receipt";
+  const key = `receipts/${new Date().toISOString().slice(0,10)}/${receiptId}-${safeName}`;
   await c.env.RECEIPTS.put(key, file.stream(), { httpMetadata: { contentType: file.type } });
   await c.env.DB.prepare(
     `INSERT INTO receipts(id,filename,mime_type,r2_key,amount,vat_amount,supplier_name,transaction_date,notes)
@@ -590,8 +601,10 @@ app.get("/api/receipts/:id/file", async (c) => {
   const object = await c.env.RECEIPTS.get(receipt.r2_key);
   if (!object) return c.json({ error: "File missing" }, 404);
   const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  headers.set("Content-Disposition", `inline; filename="${String(receipt.filename).replace(/["\r\n]/g, "_")}"`);
+  headers.set("Content-Type", isAllowedReceiptMimeType(receipt.mime_type) ? receipt.mime_type : "application/octet-stream");
+  headers.set("Content-Disposition", safeReceiptContentDisposition(String(receipt.filename)));
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Cache-Control", "private, no-store");
   return new Response(object.body, { headers });
 });
 
