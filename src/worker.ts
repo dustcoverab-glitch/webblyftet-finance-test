@@ -479,7 +479,7 @@ const rowSchema = z.object({
   description: z.string().min(1),
   quantity: z.number().positive(),
   unit: z.string().optional().default("st"),
-  unit_price: z.number(),
+  unit_price: z.number().optional(),
   discount_percent: z.number().min(0).max(100).default(0),
   vat_percent: z.number().default(25),
   article_number: z.string().optional().default(""),
