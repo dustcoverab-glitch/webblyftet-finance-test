@@ -30,6 +30,14 @@ import {
   signCustomerOrder
 } from "./core/customer-order";
 import {
+  createContractFlowCustomerLink,
+  createContractFlowFromHandoff,
+  getContractFlow,
+  listContractFlows,
+  simulatedContractFlowHandoff,
+  updateContractFlowDraft
+} from "./core/contract-flow";
+import {
   connectionStatus,
   createAuthUrl,
   exchangeCode
@@ -493,6 +501,66 @@ const offerSchema = z.object({
   expire_date: z.string().optional().default(""),
   remarks: z.string().optional().default(""),
   rows: z.array(rowSchema).min(1)
+});
+
+const contractFlowItemSchema = rowSchema.extend({
+  source: z.enum(["PRODUCT_PRICE", "FREE_ROW"]).optional()
+});
+
+const contractFlowDraftSchema = z.object({
+  company: z.object({
+    name: z.string().optional().nullable(),
+    org_number: z.string().optional().nullable(),
+    address1: z.string().optional().nullable(),
+    zip: z.string().optional().nullable(),
+    city: z.string().optional().nullable()
+  }),
+  contact: z.object({
+    name: z.string().optional().nullable(),
+    email: z.string().optional().nullable(),
+    phone: z.string().optional().nullable()
+  }),
+  items: z.array(contractFlowItemSchema)
+});
+
+const contractFlowHandoffSchema = z.object({
+  source: z.enum(["WEBBLYFTET_PORTAL", "MANUAL"]),
+  source_customer_id: z.string().optional().nullable(),
+  seller: z.object({
+    id: z.string().optional().nullable(),
+    name: z.string().optional().nullable()
+  }).optional().nullable(),
+  meeting: z.object({
+    id: z.string().optional().nullable(),
+    notes: z.string().optional().nullable()
+  }).optional().nullable(),
+  company: contractFlowDraftSchema.shape.company,
+  contact: contractFlowDraftSchema.shape.contact,
+  items: z.array(contractFlowItemSchema)
+});
+
+app.get("/api/contract-flows", async (c) => c.json(await listContractFlows(c.env)));
+
+app.post("/api/contract-flows", zValidator("json", contractFlowHandoffSchema), async (c) => {
+  return c.json(await createContractFlowFromHandoff(c.env, c.req.valid("json")), 201);
+});
+
+app.post("/api/contract-flows/simulate", async (c) => {
+  return c.json(await createContractFlowFromHandoff(c.env, simulatedContractFlowHandoff()), 201);
+});
+
+app.get("/api/contract-flows/:id", async (c) => {
+  const flow = await getContractFlow(c.env, c.req.param("id"));
+  if (!flow) return c.json({ error: "Contract flow not found" }, 404);
+  return c.json(flow);
+});
+
+app.put("/api/contract-flows/:id/draft", zValidator("json", contractFlowDraftSchema), async (c) => {
+  return c.json(await updateContractFlowDraft(c.env, c.req.param("id"), c.req.valid("json")));
+});
+
+app.post("/api/contract-flows/:id/customer-link", async (c) => {
+  return c.json(await createContractFlowCustomerLink(c.env, c.req.param("id")));
 });
 
 app.get("/api/offers", async (c) => c.json(await all<any>(

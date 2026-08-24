@@ -386,6 +386,31 @@ export async function resetTables(db = env.DB): Promise<void> {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_customer_order_sessions_order
       ON customer_order_sessions(sales_order_id, status, expires_at)`,
+    `CREATE TABLE IF NOT EXISTS contract_flows (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT,
+      source TEXT NOT NULL,
+      source_customer_id TEXT,
+      seller_name TEXT,
+      seller_id TEXT,
+      meeting_id TEXT,
+      status TEXT NOT NULL DEFAULT 'DRAFT',
+      notes TEXT,
+      handoff_json TEXT NOT NULL,
+      draft_json TEXT NOT NULL,
+      sales_order_id TEXT,
+      customer_order_session_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_contract_flows_customer
+      ON contract_flows(customer_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_contract_flows_source_customer
+      ON contract_flows(source, source_customer_id)
+      WHERE source_customer_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_contract_flows_status
+      ON contract_flows(status, updated_at)`,
     `CREATE TABLE IF NOT EXISTS payment_methods (
       id TEXT PRIMARY KEY,
       customer_id TEXT NOT NULL,
@@ -462,6 +487,7 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("DELETE FROM accounting_events").run();
   await db.prepare("DELETE FROM payment_methods").run();
   await db.prepare("DELETE FROM payment_method_setup_sessions").run();
+  await db.prepare("DELETE FROM contract_flows").run();
   await db.prepare("DELETE FROM customer_order_sessions").run();
   await db.prepare("DELETE FROM payment_attempts").run();
   await db.prepare("DELETE FROM payments").run();

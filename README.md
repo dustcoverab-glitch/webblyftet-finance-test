@@ -239,6 +239,30 @@ När kunden accepterar:
 
 Fortnox-faktura skapas från den interna fakturan via `POST /api/invoices/:id/sync-fortnox`; Fortnox document number sparas tillbaka på invoice-raden. Stripe recurring-flödet skapas separat via `POST /api/subscriptions/:id/activate`.
 
+## Contract Flow Handoff
+
+Finance Test har ett internt kontraktsflöde ovanpå befintliga `customer_order_sessions`. Syftet är att simulera framtida handoff från huvudportalen utan att koppla ihop systemen än.
+
+Interna säljvyer:
+
+- `GET /contract-flow/new`
+- `GET /contract-flow/:id`
+
+Interna API-routes:
+
+- `GET /api/contract-flows`
+- `POST /api/contract-flows`
+- `POST /api/contract-flows/simulate`
+- `GET /api/contract-flows/:id`
+- `PUT /api/contract-flows/:id/draft`
+- `POST /api/contract-flows/:id/customer-link`
+
+Alla `/contract-flow/*` och `/api/contract-flows*` är interna och ska ligga bakom Cloudflare Access. Endast den frysta kundresan på `/customer-order/*` får vara publik via token.
+
+Framtida portalintegration ska skicka ett `ContractFlowHandoff`-payload till `POST /api/contract-flows` med service-to-service-auth framför endpointen. Den endpointen är inte publik. Handoff-payloaden innehåller källa, säljare, kunduppgifter, kontaktperson, rader och anteckningar. Finance matchar kund först på `source_customer_id`, därefter organisationsnummer, och skapar annars en ny lokal kund när säljaren fryser kundlänken.
+
+När säljaren skapar kundlänk skapas en immutable customer-order snapshot/session från befintligt offer/order-flöde. Efter detta är seller-workspacets orderunderlag låst; ändringar ska hanteras som ny version i senare steg.
+
 ## Stripe Subscriptions
 
 Produkter och priser synkas från Finance Core till Stripe med lokala idempotency keys och metadata (`webblyftet_product_id`, `webblyftet_price_id`). Subscriptions aktiveras bara om lokal subscription finns, kunden har Stripe Customer och en aktiv lokal Stripe-betalmetod finns.

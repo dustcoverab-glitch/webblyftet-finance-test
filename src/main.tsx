@@ -186,6 +186,7 @@ async function stripeJs(publishableKey: string) {
 const nav = [
   ["/", "Översikt", Gauge],
   ["/customers", "Kunder", Users],
+  ["/contract-flow/new", "Avtalskedja", BadgeCheck],
   ["/products", "Produkter & priser", Package],
   ["/subscriptions", "Abonnemang", Repeat],
   ["/offers", "Offerter", FileCheck2],
@@ -755,6 +756,261 @@ function OfferRowsTable({ rows }: { rows: OfferEditorRow[] }) {
   if (!rows.length) return <p className="muted">Inga rader.</p>;
   return <table><thead><tr><th>Rad</th><th>Antal</th><th>Pris</th><th>Rabatt</th><th>Moms</th><th>Total</th></tr></thead><tbody>{rows.map((r:any)=>
     <tr key={r.id}><td>{r.description}<small>{r.product_id || "Fri rad"}</small></td><td>{r.quantity}</td><td>{moneyMinor(r.unit_price_minor)}</td><td>{r.discount_percent}%</td><td>{r.vat_percent}%</td><td><strong>{moneyMinor(lineNetMinor(r) + lineVatMinor(r))}</strong><small>{r.billing_interval || r.billing_type}</small></td></tr>)}</tbody></table>;
+}
+
+function flowItemToEditorRow(item: any): OfferEditorRow {
+  return {
+    id: crypto.randomUUID(),
+    price_id: item.price_id || "",
+    product_id: item.product_id || "",
+    description: item.description || "",
+    quantity: String(item.quantity ?? 1),
+    unit_price_minor: item.unit_price ? parseMoneyInputToMinor(item.unit_price) : 0,
+    discount_percent: String(item.discount_percent ?? 0),
+    vat_percent: String(item.vat_percent ?? 25),
+    billing_type: "ONE_TIME",
+    billing_interval: ""
+  };
+}
+
+function hydrateFlowRows(editorRows: OfferEditorRow[], options: ReturnType<typeof productPriceOptions>) {
+  return editorRows.map((row) => {
+    if (!row.price_id || (row.product_id && row.unit_price_minor > 0 && row.billing_type)) return row;
+    const option = options.find((item) => item.price.id === row.price_id);
+    return option ? {
+      ...row,
+      product_id: option.product.id,
+      unit_price_minor: Number(option.price.amount ?? 0),
+      billing_type: option.price.billing_type,
+      billing_interval: option.price.billing_interval ?? "",
+      vat_percent: String(option.price.vat_percent ?? row.vat_percent ?? 25)
+    } : row;
+  });
+}
+
+function editorRowsToPayload(rows: OfferEditorRow[]) {
+  return rows.map((row) => ({
+    product_id: row.product_id || null,
+    price_id: row.price_id || null,
+    description: row.description,
+    quantity: Number(row.quantity || 0),
+    unit: "st",
+    unit_price: row.price_id ? undefined : Number(minorToInput(row.unit_price_minor)),
+    discount_percent: Number(row.discount_percent || 0),
+    vat_percent: Number(row.vat_percent || 0),
+    article_number: "",
+    source: row.price_id ? "PRODUCT_PRICE" : "FREE_ROW"
+  }));
+}
+
+function ContractFlowNew() {
+  const navigate = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function simulate() {
+    setBusy(true); setError("");
+    try {
+      const flow:any = await post("/api/contract-flows/simulate");
+      navigate(`/contract-flow/${flow.id}`);
+    } catch (err:any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <>
+    <PageHead title="Avtalskedja" subtitle="Simulerad handoff från säljmöte till kundlänk, signering och subscription."
+      action={<button onClick={simulate} disabled={busy}><BadgeCheck size={16}/>Simulera säljmöte</button>} />
+    {error && <ErrorNotice message={error}/>}
+    <div className="contractHero">
+      <div>
+        <span className="eyebrow">Sales closing workspace</span>
+        <h2>Kunden säger ja. Säljaren startar kedjan.</h2>
+        <p>Den här interna vyn simulerar exakt det handoff-kontrakt som stora portalen senare kan skicka, men utan extern integration ännu.</p>
+      </div>
+      <div className="flowPreview">
+        <Status value="INTERNAL"/>
+        <strong>Anderssons Bygg AB</strong>
+        <small>Webblyftet Bas + Webblyftet Service</small>
+      </div>
+    </div>
+  </>;
+}
+
+function ContractFlowWorkspace() {
+  const { id } = useParams();
+  const [flow, setFlow] = useState<any>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [error, setError] = useState("");
+  const [customerLink, setCustomerLink] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [company, setCompany] = useState<any>({});
+  const [contact, setContact] = useState<any>({});
+  const [rows, setRows] = useState<OfferEditorRow[]>([]);
+  const priceOptions = useMemo(() => productPriceOptions(products), [products]);
+  const totals = useMemo(() => offerTotals(rows), [rows]);
+  async function load() {
+    const [nextFlow, nextProducts] = await Promise.all([
+      api<any>(`/api/contract-flows/${id}`),
+      api<Product[]>("/api/products")
+    ]);
+    const nextOptions = productPriceOptions(nextProducts);
+    setFlow(nextFlow); setProducts(nextProducts);
+    setCompany(nextFlow.draft.company ?? {});
+    setContact(nextFlow.draft.contact ?? {});
+    setRows(hydrateFlowRows((nextFlow.draft.items ?? []).map(flowItemToEditorRow), nextOptions));
+  }
+  useEffect(() => { load().catch((err)=>setError(err.message)); }, [id]);
+  useEffect(() => {
+    if (!flow?.customer_order_session_id) return;
+    const handle = window.setInterval(() => load().catch(()=>{}), 2500);
+    return () => window.clearInterval(handle);
+  }, [id, flow?.customer_order_session_id]);
+  useEffect(() => {
+    if (!rows.length || !priceOptions.length) return;
+    setRows((current) => hydrateFlowRows(current, priceOptions));
+  }, [priceOptions, rows.length]);
+  if (error) return <ErrorNotice message={error}/>;
+  if (!flow) return <EmptyState title="Hämtar avtalskedja" text="Laddar säljmötet, kund och affärsrader." />;
+  const frozen = Boolean(flow.customer_order_session_id);
+  const missing = flow.missing ?? [];
+  function updateRow(rowId: string, patch: Partial<OfferEditorRow>) {
+    setRows((current) => current.map((row) => row.id === rowId ? { ...row, ...patch } : row));
+  }
+  function selectPrice(rowId: string, priceId: string) {
+    const option = priceOptions.find((item) => item.price.id === priceId);
+    if (!option) {
+      updateRow(rowId, { price_id: "", product_id: "", unit_price_minor: 0, billing_type: "ONE_TIME", billing_interval: "", vat_percent: "25" });
+      return;
+    }
+    updateRow(rowId, {
+      price_id: option.price.id,
+      product_id: option.product.id,
+      description: option.product.name,
+      unit_price_minor: Number(option.price.amount ?? 0),
+      billing_type: option.price.billing_type,
+      billing_interval: option.price.billing_interval ?? "",
+      vat_percent: String(option.price.vat_percent ?? 25)
+    });
+  }
+  async function saveDraft() {
+    setSaving(true); setError("");
+    try {
+      const updated:any = await api(`/api/contract-flows/${flow.id}/draft`, {
+        method: "PUT",
+        body: JSON.stringify({ company, contact, items: editorRowsToPayload(rows) })
+      });
+      setFlow(updated);
+      return true;
+    } catch (err:any) {
+      setError(err.message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function createLink() {
+    setSaving(true); setError("");
+    try {
+      const saved = await saveDraft();
+      if (!saved) return;
+      const result:any = await post(`/api/contract-flows/${flow.id}/customer-link`);
+      setFlow(result);
+      setRows(hydrateFlowRows((result.draft?.items ?? []).map(flowItemToEditorRow), priceOptions));
+      const link = result.customer_order_url || "";
+      setCustomerLink(link);
+      if (link) await navigator.clipboard?.writeText(link);
+    } catch (err:any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  const steps = [
+    ["Kunduppgifter", !missing.some((m:any)=>String(m.field).startsWith("company") || String(m.field).startsWith("contact"))],
+    ["Affär", !missing.some((m:any)=>m.field === "items")],
+    ["Kundlänk", Boolean(flow.customer_order_session_id)],
+    ["Signering", Boolean(flow.customer_order_session?.signed_at)],
+    ["Betalmetod", Boolean(flow.customer_order_session?.payment_method_id)],
+    ["Aktivering", flow.status === "COMPLETED"]
+  ] as const;
+  return <>
+    <PageHead title="Avtalskedja" subtitle={`${flow.seller_name || "Säljare"} · ${flow.meeting_id || "Simulerat möte"}`}
+      action={<div className="actions"><Link className="button ghost" to="/contract-flow/new">Ny simulering</Link>{!frozen && <button onClick={createLink} disabled={saving}>Skapa kundlänk</button>}</div>} />
+    <div className="contractWorkspace">
+      <section className="contractMain">
+        {missing.length > 0 && !frozen && <div className="missingBanner"><strong>{missing.length} uppgifter behöver kompletteras</strong>{missing.map((m:any)=><a key={m.field} href={`#${m.field.replace(".", "-")}`}>{m.label}</a>)}</div>}
+        <Card className="contractSection">
+          <div className="panelHead"><div><h3>Kund</h3><p><Status value={flow.customer_id ? "Befintlig kund hittad" : "Importerad"}/> Prefill kan ändras innan kundlänk skapas.</p></div></div>
+          <div className="formGrid">
+            <input id="company-name" value={company.name || ""} onChange={(e)=>setCompany({...company, name:e.target.value})} placeholder="Företagsnamn" disabled={frozen}/>
+            <input id="company-org_number" value={company.org_number || ""} onChange={(e)=>setCompany({...company, org_number:e.target.value})} placeholder="Org.nr" disabled={frozen}/>
+            <input value={company.address1 || ""} onChange={(e)=>setCompany({...company, address1:e.target.value})} placeholder="Adress" disabled={frozen}/>
+            <input value={company.zip || ""} onChange={(e)=>setCompany({...company, zip:e.target.value})} placeholder="Postnummer" disabled={frozen}/>
+            <input value={company.city || ""} onChange={(e)=>setCompany({...company, city:e.target.value})} placeholder="Ort" disabled={frozen}/>
+          </div>
+        </Card>
+        <Card className="contractSection">
+          <h3>Kontaktperson</h3>
+          <div className="formGrid">
+            <input id="contact-name" value={contact.name || ""} onChange={(e)=>setContact({...contact, name:e.target.value})} placeholder="Namn" disabled={frozen}/>
+            <input id="contact-email" value={contact.email || ""} onChange={(e)=>setContact({...contact, email:e.target.value})} placeholder="E-post" disabled={frozen}/>
+            <input value={contact.phone || ""} onChange={(e)=>setContact({...contact, phone:e.target.value})} placeholder="Telefon" disabled={frozen}/>
+          </div>
+        </Card>
+        <Card className="contractSection">
+          <div className="panelHead"><div><h3>Affär</h3><p>Orderrader fryses när kundlänken skapas.</p></div>{!frozen && <button className="ghost small" onClick={()=>setRows([...rows, newOfferRow()])}><Plus size={15}/>Lägg rad</button>}</div>
+          <div className="offerRows compactRows">
+            <div className="offerRow offerRowHead"><span>Produkt/pris</span><span>Beskrivning</span><span>Antal</span><span>Pris</span><span>Rabatt</span><span>Moms</span><span>Typ</span><span>Total</span><span></span></div>
+            {rows.map((row) => <div className="offerRow" key={row.id}>
+              <select value={row.price_id} onChange={(e)=>selectPrice(row.id, e.target.value)} disabled={frozen}><option value="">Fri rad</option>{priceOptions.map((option)=><option key={option.price.id} value={option.price.id}>{option.label}</option>)}</select>
+              <input value={row.description} onChange={(e)=>updateRow(row.id, {description:e.target.value})} placeholder="Radbeskrivning" disabled={frozen}/>
+              <input value={row.quantity} onChange={(e)=>updateRow(row.id, {quantity:e.target.value})} type="number" min="0.01" step="0.01" disabled={frozen}/>
+              <input value={minorToInput(row.unit_price_minor)} onChange={(e)=>updateRow(row.id, {unit_price_minor:parseMoneyInputToMinor(e.target.value)})} type="number" min="0" step="0.01" disabled={frozen || Boolean(row.price_id)}/>
+              <input value={row.discount_percent} onChange={(e)=>updateRow(row.id, {discount_percent:e.target.value})} type="number" min="0" max="100" step="0.01" disabled={frozen}/>
+              <input value={row.vat_percent} onChange={(e)=>updateRow(row.id, {vat_percent:e.target.value})} type="number" min="0" max="100" step="0.01" disabled={frozen}/>
+              <div className="rowType"><Status value={row.billing_type}/><small>{row.billing_interval}</small></div>
+              <strong>{moneyMinor(lineNetMinor(row) + lineVatMinor(row))}</strong>
+              <button type="button" className="small ghost iconOnly" disabled={frozen} onClick={()=>setRows(rows.length === 1 ? [newOfferRow()] : rows.filter((item)=>item.id !== row.id))}><Trash2 size={15}/></button>
+            </div>)}
+          </div>
+          <div className="totalsGrid stickyTotals">
+            <div className="totalTile"><span>Engång</span><strong>{moneyMinor(totals.oneTime.gross)}</strong><small>Moms {moneyMinor(totals.oneTime.vat)}</small></div>
+            <div className="totalTile"><span>Recurring / mån</span><strong>{moneyMinor(totals.recurringMonthlyEquivalent.gross)}</strong><small>Moms {moneyMinor(totals.recurringMonthlyEquivalent.vat)}</small></div>
+            <div className="totalTile"><span>Recurring / år</span><strong>{moneyMinor(totals.recurringMonth.gross * 12 + totals.recurringYear.gross)}</strong><small>Årlig motsvarighet</small></div>
+          </div>
+        </Card>
+      </section>
+      <aside className="contractPanel">
+        <Card>
+          <h3>Avtalskedja</h3>
+          <div className="flowSteps">{steps.map(([label, done])=><div key={label} className={done ? "done" : ""}>{done ? <CheckCircle2 size={16}/> : <Clock3 size={16}/>}<span>{label}</span></div>)}</div>
+          <div className="summaryList">
+            <div><span>Status</span><Status value={flow.status}/></div>
+            <div><span>Kund</span><strong>{flow.customer_name || company.name || "—"}</strong></div>
+            <div><span>Order</span><strong>{flow.sales_order_id || "Ej skapad"}</strong></div>
+            <div><span>Session</span><strong>{flow.customer_order_session_id || "Ej skapad"}</strong></div>
+          </div>
+          {customerLink && <div className="copyNotice"><strong>Kundlänk kopierad</strong><input readOnly value={customerLink}/><button className="ghost small" onClick={()=>navigator.clipboard?.writeText(customerLink)}>Kopiera länk</button><button className="ghost small" disabled>Skicka via e-post</button></div>}
+          {flow.customer_order_session && !customerLink && <div className="copyNotice"><strong>Väntar på kund</strong><small>Sessionen finns. Öppna länken från senast kopierade länk eller skapa ny avtalsversion vid ändringar.</small></div>}
+        </Card>
+        {flow.status === "COMPLETED" && <Card className="successPanel">
+          <h3>Affären är klar</h3>
+          <div className="flowSteps">
+            <div className="done"><CheckCircle2 size={16}/>Avtal signerat</div>
+            <div className="done"><CheckCircle2 size={16}/>Betalmetod registrerad</div>
+            <div className="done"><CheckCircle2 size={16}/>Abonnemang aktivt</div>
+            <div className="done"><CheckCircle2 size={16}/>Projektfaktura {flow.invoices?.length ? "skapad" : "ej relevant"}</div>
+          </div>
+          <div className="summaryList">
+            <div><span>Invoice</span><strong>{flow.invoices?.[0]?.invoice_number || flow.invoices?.[0]?.id || "—"}</strong></div>
+            <div><span>Subscription</span><strong>{flow.subscriptions?.[0]?.stripe_subscription_id || flow.subscriptions?.[0]?.id || "—"}</strong></div>
+            <div><span>Payment</span><strong>{flow.payments?.[0]?.status || "—"}</strong></div>
+          </div>
+        </Card>}
+      </aside>
+    </div>
+  </>;
 }
 
 function Invoices() {
@@ -1349,7 +1605,7 @@ function App(){
     return <Routes><Route path="/customer-order/:token" element={<CustomerOrderPage/>}/></Routes>;
   }
   return <Layout><Routes>
-    <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/customers/:id" element={<CustomerDetail/>}/><Route path="/offers" element={<Offers/>}/>
+    <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/customers/:id" element={<CustomerDetail/>}/><Route path="/contract-flow/new" element={<ContractFlowNew/>}/><Route path="/contract-flow/:id" element={<ContractFlowWorkspace/>}/><Route path="/offers" element={<Offers/>}/>
     <Route path="/offers/:id" element={<OfferDetail/>}/>
     <Route path="/products" element={<Products/>}/><Route path="/subscriptions" element={<Subscriptions/>}/><Route path="/subscriptions/:id" element={<SubscriptionDetail/>}/>
     <Route path="/payment-method/:customerId" element={<PaymentMethodPage/>}/>
