@@ -80,6 +80,13 @@ describe("API health and Access middleware", () => {
     );
     expect(exact.status).toBe(400);
 
+    const getExact = await worker.fetch(
+      new Request("https://finance-test.example/webhooks/stripe", { method: "GET" }),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+      createExecutionContext()
+    );
+    expect(getExact.status).toBe(404);
+
     for (const path of ["/webhooks/stripe/foo", "/webhooks/stripe-test"]) {
       const response = await worker.fetch(
         new Request(`https://finance-test.example${path}`, {

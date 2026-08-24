@@ -59,6 +59,11 @@ app.use("*", rateLimitSensitiveRoutes());
 
 app.get("/api/health", (c) => c.json({ ok: true, env: c.env.APP_ENV, now: new Date().toISOString() }));
 
+app.all("/webhooks/stripe", async (c, next) => {
+  if (c.req.method !== "POST") return c.text("Not found", 404);
+  await next();
+});
+
 app.post("/webhooks/stripe", async (c) => {
   const rawBody = await c.req.text();
   const event = await constructStripeWebhookEvent(c.env, rawBody, c.req.header("stripe-signature") ?? null);
