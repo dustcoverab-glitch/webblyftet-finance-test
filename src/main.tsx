@@ -314,6 +314,37 @@ function activityTarget(item: any) {
   return "";
 }
 
+function groupSyncAttention(items: any[] = []) {
+  const groups = new Map<string, any>();
+  for (const item of items) {
+    const key = `${item.operation || "SYNC"}:${item.entity_type || "unknown"}:${item.status || "ERROR"}`;
+    const timestamp = item.created_at || item.updated_at || "";
+    const current = groups.get(key);
+    if (!current) {
+      groups.set(key, {
+        id: `sync-${item.id || key}`,
+        to: "/integration",
+        title: item.entity_type === "FORTNOX_INBOX" ? "Fortnox Inbox-fel" : "Integrationsfel",
+        operation: item.operation || "SYNC",
+        entityType: item.entity_type || "unknown",
+        status: "ERROR",
+        count: 1,
+        latest: timestamp
+      });
+    } else {
+      current.count += 1;
+      if (timestamp && (!current.latest || String(timestamp) > String(current.latest))) current.latest = timestamp;
+    }
+  }
+  return Array.from(groups.values()).map((item) => ({
+    id: item.id,
+    to: item.to,
+    title: item.count > 1 ? `${item.title} x ${item.count}` : item.title,
+    meta: `${item.operation} · ${item.entityType}${item.count > 1 ? ` · senaste ${displayDateTime(item.latest)}` : ""}`,
+    status: item.status
+  }));
+}
+
 function Dashboard() {
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
@@ -356,13 +387,7 @@ function Dashboard() {
       meta: `${item.customer_name} · ${item.id}`,
       status: item.status
     })),
-    ...(data.attention?.sync ?? []).map((item:any) => ({
-      id: `sync-${item.id}`,
-      to: "/integration",
-      title: "Integrationsfel",
-      meta: `${item.operation} · ${item.entity_type}`,
-      status: "ERROR"
-    }))
+    ...groupSyncAttention(data.attention?.sync ?? [])
   ].slice(0, 8);
   return <>
     <PageHead title="Finance Control Center" subtitle="Operativ testöversikt för kundfordringar, fakturering och abonnemang."
@@ -759,6 +784,18 @@ function Invoices() {
     ["project", "Project invoices"],
     ["subscription", "Subscription invoices"]
   ];
+  const openInvoice = (invoiceId: string) => navigate(`/invoices/${invoiceId}`);
+  const openInvoiceFromKeyboard = (event: React.KeyboardEvent, invoiceId: string) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openInvoice(invoiceId);
+    }
+  };
+  const syncInvoice = async (event: React.MouseEvent, invoiceId: string) => {
+    event.stopPropagation();
+    await post(`/api/invoices/${invoiceId}/sync-fortnox`);
+    await load();
+  };
   return <>
     <PageHead title="Fakturor" subtitle="Intern fakturavy med status, saldo och kopplingar till order/offert."
       action={<button className="ghost" onClick={async()=>{await post("/api/invoices/pull"); await load();}}><RefreshCw size={16}/>Synka fakturor</button>}/>
@@ -770,23 +807,37 @@ function Invoices() {
     </div>
     <Card className="invoiceWorkspace">
       <div className="tableTools">
-        <div className="filterTabs">{filters.map(([key, label]) =>
-          <button key={key} className={`tabButton ${filter === key ? "active" : ""}`} onClick={()=>setSearchParams(key === "all" ? {} : { filter: key })}>{label}</button>
-        )}</div>
-        <label className="searchBox"><Search size={15}/><input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="Sök fakturanummer, kund eller Fortnox-ID"/></label>
-        <select value={sort} onChange={(event)=>setSort(event.target.value)}>
+        <label className="searchBox invoiceSearch"><Search size={15}/><input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="Sök faktura, kund eller Fortnox-ID"/></label>
+        <select value={sort} onChange={(event)=>setSort(event.target.value)} aria-label="Sortera fakturor">
           <option value="latest">Senaste först</option>
           <option value="due">Förfallodatum</option>
           <option value="amount">Högsta belopp</option>
           <option value="balance">Högsta saldo</option>
-          <option value="status">Status A–Ö</option>
+          <option value="status">Status A-Ö</option>
         </select>
+        <div className="filterTabs">{filters.map(([key, label]) =>
+          <button key={key} className={`tabButton ${filter === key ? "active" : ""}`} onClick={()=>setSearchParams(key === "all" ? {} : { filter: key })}>{label}</button>
+        )}</div>
       </div>
-      <table><thead><tr><th>#</th><th>Kund</th><th>Typ</th><th>Fakturadatum</th><th>Förfallo</th><th>Total</th><th>Saldo</th><th>Status</th><th>Fortnox</th><th></th></tr></thead><tbody>
-      {filteredRows.map(r=><tr key={r.id} className="clickRow" onClick={()=>navigate(`/invoices/${r.id}`)}><td><strong>{invoiceLabel(r)}</strong><small>{r.id}</small></td><td>{r.customer_name}</td><td>{r.invoice_type || "PROJECT_INVOICE"}</td><td>{displayDate(r.invoice_date)}</td><td>{displayDate(r.due_date)}</td><td>{money(r.total)}</td><td>{money(r.balance)}</td><td><Status value={r.status}/></td><td>{r.fortnox_document_number || <span className="muted">Ej synkad</span>}<small>{r.sync_status || "LOCAL_ONLY"}</small></td>
-        <td><div className="rowActions"><Link className="button small ghost" to={`/invoices/${r.id}`} onClick={(event)=>event.stopPropagation()}>Visa</Link>{!r.fortnox_document_number && <button className="small" onClick={async(event)=>{event.stopPropagation(); await post(`/api/invoices/${r.id}/sync-fortnox`); await load();}}>Sync</button>}</div></td></tr>)}
+      <div className="invoiceTableWrap"><table className="invoiceTable"><thead><tr><th>#</th><th>Kund</th><th>Typ</th><th>Fakturadatum</th><th>Förfallo</th><th>Total</th><th>Saldo</th><th>Status</th><th>Fortnox</th><th></th></tr></thead><tbody>
+      {filteredRows.map(r=><tr key={r.id} className="clickRow" tabIndex={0} role="link" aria-label={`Öppna faktura ${invoiceLabel(r)}`} onClick={()=>openInvoice(r.id)} onKeyDown={(event)=>openInvoiceFromKeyboard(event, r.id)}><td><strong>{invoiceLabel(r)}</strong><small>{r.id}</small></td><td>{r.customer_name}</td><td>{r.invoice_type || "PROJECT_INVOICE"}</td><td>{displayDate(r.invoice_date)}</td><td>{displayDate(r.due_date)}</td><td>{money(r.total)}</td><td>{money(r.balance)}</td><td><Status value={r.status}/></td><td>{r.fortnox_document_number || <span className="muted">Ej synkad</span>}<small>{r.sync_status || "LOCAL_ONLY"}</small></td>
+        <td><div className="rowActions"><Link className="button small ghost" to={`/invoices/${r.id}`} onClick={(event)=>event.stopPropagation()}>Visa</Link>{!r.fortnox_document_number && <button className="small" onClick={(event)=>syncInvoice(event, r.id)}>Sync</button>}</div></td></tr>)}
       {!filteredRows.length && <tr><td colSpan={10}><EmptyState title="Inga fakturor matchar" text="Justera filter, sökord eller synka fakturor från Fortnox." /></td></tr>}
-    </tbody></table></Card>
+    </tbody></table></div>
+      <div className="invoiceMobileList">
+        {filteredRows.map((r) => <article key={r.id} className="invoiceMobileCard" tabIndex={0} role="link" aria-label={`Öppna faktura ${invoiceLabel(r)}`} onClick={()=>openInvoice(r.id)} onKeyDown={(event)=>openInvoiceFromKeyboard(event, r.id)}>
+          <div className="mobileCardHead"><div><strong>{invoiceLabel(r)}</strong><small>{r.customer_name}</small></div><Status value={r.status}/></div>
+          <div className="mobileInvoiceGrid">
+            <div><span>Total</span><strong>{money(r.total)}</strong></div>
+            <div><span>Saldo</span><strong>{money(r.balance)}</strong></div>
+            <div><span>Förfallo</span><strong>{displayDate(r.due_date)}</strong></div>
+            <div><span>Fortnox</span><strong>{r.fortnox_document_number || "Ej synkad"}</strong><small>{r.sync_status || "LOCAL_ONLY"}</small></div>
+          </div>
+          <div className="rowActions mobileActions"><Link className="button small ghost" to={`/invoices/${r.id}`} onClick={(event)=>event.stopPropagation()}>Visa</Link>{!r.fortnox_document_number && <button className="small" onClick={(event)=>syncInvoice(event, r.id)}>Sync</button>}</div>
+        </article>)}
+        {!filteredRows.length && <EmptyState title="Inga fakturor matchar" text="Justera filter, sökord eller synka fakturor från Fortnox." />}
+      </div>
+    </Card>
   </>;
 }
 
