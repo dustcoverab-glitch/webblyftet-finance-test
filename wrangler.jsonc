@@ -79,7 +79,7 @@
         "CF_ACCESS_TEAM_DOMAIN": "gentle-snowflake-b0da.cloudflareaccess.com",
         "CF_ACCESS_AUD": "645cd3856053b06108fe4a47d3e9bf5e0b2235258836b97ec061ba1fec657aca",
         "MAX_RECEIPT_UPLOAD_BYTES": "10485760",
-        "EMAIL_FROM": "offers@REPLACE_WITH_VERIFIED_DOMAIN",
+        "EMAIL_FROM": "onboarding@resend.dev",
         "EMAIL_FROM_NAME": "Webblyftet",
         "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"

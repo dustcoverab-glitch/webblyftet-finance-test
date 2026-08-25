@@ -154,6 +154,8 @@ npx wrangler secret put RESEND_API_KEY --env test
 
 `EMAIL_FROM`, `EMAIL_FROM_NAME` och `EMAIL_REPLY_TO` ligger som vanliga environment variables i `wrangler.jsonc` eftersom de inte är hemligheter. API key får aldrig skrivas till Git, D1, frontend eller loggar.
 
+Utan egen verifierad domän kan `env.test` använda Resends testavsändare `onboarding@resend.dev`. Den är bara avsedd för test och Resend begränsar normalt mottagare till e-postadressen som hör till Resend-kontot. För att skicka till valfri kund- eller testinkorg krävs en verifierad domän i Resend.
+
 ## Cloudflare Access
 
 För deployad test/staging ska Cloudflare Access ligga framför hela testsidan. Se även `SECURITY.md`.
