@@ -222,6 +222,45 @@ export async function createOfferAcceptanceToken(env: Env, offerId: string) {
   return { token, url: `${env.APP_BASE_URL.replace(/\/+$/, "")}/sign/${token}`, version };
 }
 
+function snapshotTotals(snapshot: { rows: SnapshotRow[]; offer: any; totals: any }) {
+  const oneTimeRows = snapshot.rows.filter((row) => row.billing_type === "ONE_TIME");
+  const recurringRows = snapshot.rows.filter((row) => row.billing_type === "RECURRING");
+  return {
+    oneTimeTotal: calculateMinor(oneTimeRows).total,
+    recurringMonthly: subscriptionMonthlyAmount(recurringRows.map((row) => ({
+      unit_amount: row.unit_price_minor,
+      quantity: row.quantity,
+      billing_interval: row.billing_interval
+    })))
+  };
+}
+
+async function insertPreparedSalesOrder(env: Env, offerId: string, versionId: string, snapshot: { rows: SnapshotRow[]; offer: any; totals: any }) {
+  const existing = await one<any>(
+    env.DB,
+    "SELECT * FROM sales_orders WHERE offer_id=? AND offer_version_id=? AND acceptance_id IS NULL ORDER BY created_at DESC LIMIT 1",
+    offerId,
+    versionId
+  );
+  const totals = snapshotTotals(snapshot);
+  const orderId = existing?.id ?? id("sord");
+  if (!existing) {
+    await env.DB.prepare(
+      `INSERT INTO sales_orders(id,offer_id,offer_version_id,acceptance_id,customer_id,status,currency,one_time_total_minor,recurring_monthly_minor)
+       VALUES (?,?,?,?,?,'PREPARED',?,?,?)`
+    ).bind(orderId, offerId, versionId, null, snapshot.offer.customer_id, snapshot.offer.currency ?? "SEK", totals.oneTimeTotal, totals.recurringMonthly).run();
+    await ensureOrderItems(env, orderId, snapshot.rows);
+    await audit(env, "SALES_ORDER_PREPARED", "sales_order", orderId, null, { offer_id: offerId, offer_version_id: versionId });
+  }
+  return getSalesOrder(env, orderId);
+}
+
+export async function createPreparedSalesOrderFromOfferVersion(env: Env, offerId: string, versionId: string) {
+  const version = await one<any>(env.DB, "SELECT * FROM offer_versions WHERE id=? AND offer_id=?", versionId, offerId);
+  if (!version) throw new PublicAppError(404, "Offertversion saknas.");
+  return insertPreparedSalesOrder(env, offerId, versionId, JSON.parse(version.snapshot_json));
+}
+
 export async function getOfferForToken(env: Env, token: string) {
   const tokenHash = await sha256Hex(token);
   const row = await one<any>(
@@ -306,6 +345,59 @@ export async function acceptOfferToken(env: Env, input: {
   return createSalesOrderFromAcceptance(env, acceptance.id);
 }
 
+export async function acceptPreparedSalesOrder(env: Env, input: {
+  sales_order_id: string;
+  accepted_by_name: string;
+  accepted_by_email: string;
+  ip_address?: string | null;
+  user_agent?: string | null;
+}) {
+  const order = await one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", input.sales_order_id);
+  if (!order) throw new PublicAppError(404, "Order saknas.");
+  if (order.acceptance_id) return ensureSalesOrderFromAcceptance(env, order.acceptance_id);
+  if (String(order.status).toUpperCase() !== "PREPARED") {
+    throw new PublicAppError(409, "Ordern kan inte accepteras i nuvarande status.");
+  }
+  const version = await one<any>(
+    env.DB,
+    "SELECT * FROM offer_versions WHERE id=? AND offer_id=?",
+    order.offer_version_id,
+    order.offer_id
+  );
+  if (!version) throw new PublicAppError(404, "Offertversion saknas.");
+  const snapshotHash = await sha256Hex(version.snapshot_json);
+  const acceptanceId = id("oacc");
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO offer_acceptances
+      (id,offer_id,offer_version_id,customer_id,accepted_by_name,accepted_by_email,accepted_at,ip_address,user_agent,snapshot_hash,metadata_json)
+     VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,?)`
+  ).bind(
+    acceptanceId,
+    order.offer_id,
+    order.offer_version_id,
+    order.customer_id,
+    input.accepted_by_name,
+    input.accepted_by_email,
+    input.ip_address ?? "",
+    input.user_agent ?? "",
+    snapshotHash,
+    JSON.stringify({ source: "customer_order", sales_order_id: order.id })
+  ).run();
+  const acceptance = await one<any>(env.DB, "SELECT * FROM offer_acceptances WHERE offer_version_id=?", order.offer_version_id);
+  if (!acceptance) throw new PublicAppError(500, "Offertacceptans kunde inte sparas.");
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE offers SET status='ACCEPTED', accepted_at=CURRENT_TIMESTAMP, accepted_by_name=?, accepted_by_email=?,
+       acceptance_ip=?, acceptance_user_agent=?, signature_token_hash=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(input.accepted_by_name, input.accepted_by_email, input.ip_address ?? "", input.user_agent ?? "", order.offer_id),
+    env.DB.prepare(
+      "UPDATE sales_orders SET acceptance_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND acceptance_id IS NULL"
+    ).bind(acceptance.id, order.id)
+  ]);
+  await audit(env, "OFFER_ACCEPTED", "offer", order.offer_id, null, { acceptance_id: acceptance.id, offer_version_id: order.offer_version_id });
+  return createSalesOrderFromAcceptance(env, acceptance.id);
+}
+
 export async function createSalesOrderFromAcceptance(env: Env, acceptanceId: string) {
   return ensureSalesOrderFromAcceptance(env, acceptanceId);
 }
@@ -321,12 +413,7 @@ export async function ensureSalesOrderFromAcceptance(env: Env, acceptanceId: str
   const existing = await one<any>(env.DB, "SELECT * FROM sales_orders WHERE acceptance_id=?", acceptanceId);
   const oneTimeRows = snapshot.rows.filter((row) => row.billing_type === "ONE_TIME");
   const recurringRows = snapshot.rows.filter((row) => row.billing_type === "RECURRING");
-  const oneTimeTotal = calculateMinor(oneTimeRows).total;
-  const recurringMonthly = subscriptionMonthlyAmount(recurringRows.map((row) => ({
-    unit_amount: row.unit_price_minor,
-    quantity: row.quantity,
-    billing_interval: row.billing_interval
-  })));
+  const { oneTimeTotal, recurringMonthly } = snapshotTotals(snapshot);
   const orderId = existing?.id ?? id("sord");
   if (!existing) {
     await env.DB.prepare(

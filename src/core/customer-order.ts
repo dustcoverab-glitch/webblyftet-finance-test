@@ -1,4 +1,5 @@
 import type Stripe from "stripe";
+import { acceptPreparedSalesOrder } from "./business-flow";
 import { audit } from "./finance";
 import { activateStripeSubscription, createPaymentMethodSetupIntent } from "../integrations/stripe/subscriptions";
 import { stripeClient } from "../integrations/stripe/client";
@@ -227,7 +228,7 @@ async function publicSessionPayload(env: Env, session: CustomerOrderSession) {
 export async function createCustomerOrderSession(env: Env, salesOrderId: string): Promise<CustomerOrderSessionResult> {
   const order = await one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", salesOrderId);
   if (!order) throw new PublicAppError(404, "Order saknas.");
-  if (!["READY", "CREATED", "PROVISIONING", "PARTIAL_FAILURE"].includes(String(order.status))) {
+  if (!["PREPARED", "READY", "CREATED", "PROVISIONING", "PARTIAL_FAILURE"].includes(String(order.status))) {
     throw new PublicAppError(409, "Ordern kan inte skickas till kund i nuvarande status.");
   }
   const token = newToken();
@@ -322,6 +323,25 @@ export async function signCustomerOrder(env: Env, token: string, input: {
     signer_email: input.signer_email,
     document_hash: documentHash
   });
+  const confirmedOrder = await acceptPreparedSalesOrder(env, {
+    sales_order_id: session.sales_order_id,
+    accepted_by_name: input.signer_name,
+    accepted_by_email: input.signer_email,
+    ip_address: input.ip_address,
+    user_agent: input.user_agent
+  });
+  const flowStatus = ["READY", "COMPLETED"].includes(String(confirmedOrder?.status ?? "").toUpperCase())
+    ? "SALES_ORDER_CONFIRMED"
+    : "ACCEPTED";
+  const flowUpdate = await env.DB.prepare(
+    "UPDATE contract_flows SET status=?, updated_at=CURRENT_TIMESTAMP WHERE sales_order_id=? AND status NOT IN ('COMPLETED',?)"
+  ).bind(flowStatus, session.sales_order_id, flowStatus).run();
+  if ((flowUpdate.meta.changes ?? 0) > 0) {
+    const flows = await env.DB.prepare("SELECT id FROM contract_flows WHERE sales_order_id=?").bind(session.sales_order_id).all<{ id: string }>();
+    for (const flow of flows.results) {
+      await audit(env, "SYSTEM", null, `CONTRACT_FLOW_${flowStatus}`, "contract_flow", flow.id, null, { customer_order_session_id: session.id });
+    }
+  }
   const updated = await one<CustomerOrderSession>(env.DB, "SELECT * FROM customer_order_sessions WHERE id=?", session.id);
   return publicSessionPayload(env, updated ?? session);
 }
@@ -505,6 +525,9 @@ async function completeCustomerOrder(env: Env, session: CustomerOrderSession): P
   }
   await env.DB.prepare(
     "UPDATE sales_orders SET status='COMPLETED', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!='COMPLETED'"
+  ).bind(session.sales_order_id).run();
+  await env.DB.prepare(
+    "UPDATE contract_flows SET status='COMPLETED', completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE sales_order_id=? AND status!='COMPLETED'"
   ).bind(session.sales_order_id).run();
   return { completed: true, status: "COMPLETED", reason: null };
 }

@@ -17,6 +17,7 @@ import {
   createSubscription,
   seedTestProducts
 } from "./core/finance";
+import { createOrReuseCustomer } from "./core/customers";
 import {
   acceptOfferToken,
   createOffer as createBusinessOffer,
@@ -284,13 +285,8 @@ app.get("/api/customers/:id", async (c) => {
 
 app.post("/api/customers", zValidator("json", customerSchema), async (c) => {
   const data = c.req.valid("json");
-  const customerId = id("cus");
-  await c.env.DB.prepare(
-    `INSERT INTO customers
-      (id,org_number,name,email,phone,address1,zip,city,payment_terms_days,notes)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`
-  ).bind(customerId, data.org_number, data.name, data.email, data.phone, data.address1, data.zip, data.city, data.payment_terms_days, data.notes).run();
-  return c.json(await one(c.env.DB, "SELECT * FROM customers WHERE id=?", customerId), 201);
+  const result = await createOrReuseCustomer(c.env, data);
+  return c.json(result.customer, result.created ? 201 : 200);
 });
 
 app.post("/api/customers/:id/sync", async (c) => {

@@ -144,6 +144,10 @@ export async function sendContractFlowOfferEmail(env: Env, flowId: string, optio
        SET status='SENT', provider_message_id=?, sent_at=CURRENT_TIMESTAMP
        WHERE id=?`
     ).bind(result.provider_message_id, eventId).run();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE offers SET status='SENT', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('DRAFT','READY','SENT')").bind(order.offer_id),
+      env.DB.prepare("UPDATE contract_flows SET status='OFFER_SENT', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('DRAFT','READY','OFFER_READY','CUSTOMER_LINK_CREATED')").bind(flowId)
+    ]);
     await audit(env, "SYSTEM", null, "OFFER_EMAIL_SENT", "contract_flow", flowId, null, {
       recipient,
       outbound_email_event_id: eventId,

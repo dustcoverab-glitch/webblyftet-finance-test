@@ -198,7 +198,7 @@ export async function resetTables(db = env.DB): Promise<void> {
       id TEXT PRIMARY KEY,
       offer_id TEXT NOT NULL,
       offer_version_id TEXT NOT NULL,
-      acceptance_id TEXT NOT NULL UNIQUE,
+      acceptance_id TEXT UNIQUE,
       customer_id TEXT NOT NULL,
       currency TEXT NOT NULL DEFAULT 'SEK',
       one_time_total_minor INTEGER NOT NULL DEFAULT 0,

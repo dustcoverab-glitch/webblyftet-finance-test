@@ -1,4 +1,5 @@
-import { acceptOfferToken, createOffer, createOfferAcceptanceToken, type OfferInputRow } from "./business-flow";
+import { createOffer, createOfferVersion, createPreparedSalesOrderFromOfferVersion, type OfferInputRow } from "./business-flow";
+import { createOrReuseCustomer, findMatchingCustomer, normalizeEmail, normalizeOrgNumber } from "./customers";
 import { audit } from "./finance";
 import { createCustomerOrderSession } from "./customer-order";
 import { PublicAppError } from "../lib/app-error";
@@ -8,9 +9,13 @@ export type ContractFlowStatus =
   | "DRAFT"
   | "CUSTOMER_INCOMPLETE"
   | "READY"
+  | "OFFER_READY"
+  | "OFFER_SENT"
   | "CUSTOMER_LINK_CREATED"
   | "CUSTOMER_OPENED"
   | "SIGNED"
+  | "ACCEPTED"
+  | "SALES_ORDER_CONFIRMED"
   | "PAYMENT_METHOD_ADDED"
   | "ACTIVATING"
   | "COMPLETED"
@@ -83,21 +88,12 @@ function validateDraft(draft: ContractFlowDraft) {
 }
 
 async function matchCustomer(env: Env, payload: ContractFlowHandoff) {
-  if (payload.source_customer_id) {
-    const bySource = await one<any>(
-      env.DB,
-      "SELECT c.* FROM contract_flows f JOIN customers c ON c.id=f.customer_id WHERE f.source=? AND f.source_customer_id=? AND f.customer_id IS NOT NULL ORDER BY f.created_at DESC LIMIT 1",
-      payload.source,
-      payload.source_customer_id
-    );
-    if (bySource) return { customer: bySource, strategy: "source_customer_id" };
-  }
-  const orgNumber = clean(payload.company.org_number);
-  if (orgNumber) {
-    const byOrg = await one<any>(env.DB, "SELECT * FROM customers WHERE org_number=? ORDER BY updated_at DESC LIMIT 1", orgNumber);
-    if (byOrg) return { customer: byOrg, strategy: "org_number" };
-  }
-  return { customer: null, strategy: null };
+  return findMatchingCustomer(env, {
+    source: payload.source,
+    source_customer_id: payload.source_customer_id,
+    org_number: payload.company.org_number,
+    email: payload.contact.email
+  });
 }
 
 export function simulatedContractFlowHandoff(): ContractFlowHandoff {
@@ -212,16 +208,6 @@ export async function getContractFlow(env: Env, flowId: string) {
     env.DB.prepare("SELECT * FROM outbound_email_events WHERE contract_flow_id=? ORDER BY created_at DESC LIMIT 20").bind(flowId).all<any>(),
     env.DB.prepare("SELECT * FROM audit_log WHERE entity_id=? OR metadata_json LIKE ? ORDER BY created_at DESC LIMIT 20").bind(flowId, `%${flowId}%`).all<any>()
   ]);
-  const derivedStatus = flowStatusFromSession(session);
-  if (derivedStatus && derivedStatus !== flow.status) {
-    await env.DB.prepare(
-      "UPDATE contract_flows SET status=?, completed_at=CASE WHEN ?='COMPLETED' THEN COALESCE(completed_at,CURRENT_TIMESTAMP) ELSE completed_at END, updated_at=CURRENT_TIMESTAMP WHERE id=?"
-    ).bind(derivedStatus, derivedStatus, flowId).run();
-    flow.status = derivedStatus;
-    if (derivedStatus === "COMPLETED") {
-      await audit(env, "SYSTEM", null, "CONTRACT_FLOW_COMPLETED", "contract_flow", flowId, null, { customer_order_session_id: flow.customer_order_session_id });
-    }
-  }
   return {
     ...flow,
     draft,
@@ -251,6 +237,26 @@ export async function updateContractFlowDraft(env: Env, flowId: string, draft: C
   return getContractFlow(env, flowId);
 }
 
+export async function reconcileContractFlowState(env: Env, flowId: string) {
+  const flow = await one<any>(env.DB, "SELECT * FROM contract_flows WHERE id=?", flowId);
+  if (!flow?.customer_order_session_id) return getContractFlow(env, flowId);
+  const session = await one<any>(env.DB, "SELECT * FROM customer_order_sessions WHERE id=?", flow.customer_order_session_id);
+  const order = flow.sales_order_id ? await one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", flow.sales_order_id) : null;
+  let next = flowStatusFromSession(session);
+  if (order?.acceptance_id && session?.signed_at) next = "ACCEPTED";
+  if (order?.acceptance_id && ["READY", "COMPLETED"].includes(String(order.status).toUpperCase())) next = "SALES_ORDER_CONFIRMED";
+  if (session?.completed_at || String(session?.status ?? "").toUpperCase() === "COMPLETED") next = "COMPLETED";
+  if (!next || next === flow.status) return getContractFlow(env, flowId);
+  const result = await env.DB.prepare(
+    "UPDATE contract_flows SET status=?, completed_at=CASE WHEN ?='COMPLETED' THEN COALESCE(completed_at,CURRENT_TIMESTAMP) ELSE completed_at END, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!=?"
+  ).bind(next, next, flowId, next).run();
+  if ((result.meta.changes ?? 0) === 1) {
+    const action = next === "COMPLETED" ? "CONTRACT_FLOW_COMPLETED" : `CONTRACT_FLOW_${next}`;
+    await audit(env, "SYSTEM", null, action, "contract_flow", flowId, null, { customer_order_session_id: flow.customer_order_session_id });
+  }
+  return getContractFlow(env, flowId);
+}
+
 async function ensureCustomerForFlow(env: Env, flow: any, draft: ContractFlowDraft) {
   if (flow.customer_id) {
     await env.DB.prepare(
@@ -269,24 +275,21 @@ async function ensureCustomerForFlow(env: Env, flow: any, draft: ContractFlowDra
     await audit(env, "SYSTEM", null, "CUSTOMER_COMPLETED", "customer", flow.customer_id, null, { contract_flow_id: flow.id });
     return flow.customer_id;
   }
-  const matched = await matchCustomer(env, { ...JSON.parse(flow.handoff_json), company: draft.company, contact: draft.contact, items: draft.items });
-  if (matched.customer) return matched.customer.id;
-  const customerId = id("cus");
-  await env.DB.prepare(
-    `INSERT INTO customers(id,name,org_number,email,phone,address1,zip,city,sync_status)
-     VALUES (?,?,?,?,?,?,?,?,'LOCAL_ONLY')`
-  ).bind(
-    customerId,
-    clean(draft.company.name),
-    clean(draft.company.org_number),
-    clean(draft.contact.email),
-    clean(draft.contact.phone),
-    clean(draft.company.address1),
-    clean(draft.company.zip),
-    clean(draft.company.city)
-  ).run();
-  await audit(env, "SYSTEM", null, "CUSTOMER_COMPLETED", "customer", customerId, null, { contract_flow_id: flow.id });
-  return customerId;
+  const handoff = JSON.parse(flow.handoff_json) as ContractFlowHandoff;
+  const matched = await createOrReuseCustomer(env, {
+    source: handoff.source,
+    source_customer_id: handoff.source_customer_id,
+    name: clean(draft.company.name),
+    org_number: normalizeOrgNumber(draft.company.org_number),
+    email: normalizeEmail(draft.contact.email),
+    phone: clean(draft.contact.phone),
+    address1: clean(draft.company.address1),
+    zip: clean(draft.company.zip),
+    city: clean(draft.company.city)
+  });
+  if (!matched.customer) throw new PublicAppError(500, "Kund kunde inte skapas eller matchas.");
+  await audit(env, "SYSTEM", null, matched.created ? "CUSTOMER_COMPLETED" : "CUSTOMER_MATCHED", "customer", matched.customer.id, null, { contract_flow_id: flow.id, strategy: matched.strategy });
+  return matched.customer.id;
 }
 
 export async function createContractFlowCustomerLink(env: Env, flowId: string) {
@@ -310,14 +313,10 @@ export async function createContractFlowCustomerLink(env: Env, flowId: string) {
     rows: draft.items
   });
   if (!offer) throw new PublicAppError(500, "Offert kunde inte skapas.");
-  const token = await createOfferAcceptanceToken(env, offer.id);
-  const order = await acceptOfferToken(env, {
-    token: token.token,
-    accepted_by_name: clean(draft.contact.name) ?? "Säljare",
-    accepted_by_email: clean(draft.contact.email) ?? "",
-    ip_address: "contract-flow",
-    user_agent: "contract-flow"
-  });
+  const version = await createOfferVersion(env, offer.id);
+  await env.DB.prepare("UPDATE offers SET status='READY', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(offer.id).run();
+  await audit(env, "SYSTEM", null, "OFFER_READY", "offer", offer.id, null, { offer_version_id: version!.id });
+  const order = await createPreparedSalesOrderFromOfferVersion(env, offer.id, version!.id);
   const session = await createCustomerOrderSession(env, order.id);
   await env.DB.prepare(
     `UPDATE contract_flows
