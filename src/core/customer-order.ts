@@ -9,6 +9,7 @@ import { decryptString, encryptString, sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
 import { PublicAppError } from "../lib/app-error";
 import { WEBBLYFTET_TERMS_VERSION } from "../documents/terms";
+import { lineGrossMinor, lineNetMinor, lineVatMinor, recurringMonthlyMinor } from "../lib/money";
 
 export type CustomerOrderSessionResult = {
   id: string;
@@ -62,14 +63,6 @@ function expiryIso(days = 21): string {
   return new Date(Date.now() + days * 24 * 60 * 60_000).toISOString();
 }
 
-function rowNet(row: { unit_price_minor: number; quantity: number }): number {
-  return Math.round(Number(row.unit_price_minor ?? 0) * Number(row.quantity ?? 0));
-}
-
-function rowVat(row: { unit_price_minor: number; quantity: number; vat_percent: number }): number {
-  return Math.round(rowNet(row) * (Number(row.vat_percent ?? 0) / 100));
-}
-
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -118,11 +111,13 @@ async function buildSnapshot(env: Env, salesOrderId: string): Promise<SigningSna
   const oneTime = normalizedRows.filter((row) => row.billing_type === "ONE_TIME");
   const recurring = normalizedRows.filter((row) => row.billing_type === "RECURRING");
   const recurringMonthlyRows = recurring.map((row) => {
-    const divisor = row.billing_interval === "YEAR" ? 12 : 1;
+    const net = lineNetMinor(row);
+    const vat = lineVatMinor(row);
+    const gross = lineGrossMinor(row);
     return {
-      net: Math.round(rowNet(row) / divisor),
-      vat: Math.round(rowVat(row) / divisor),
-      annual: row.billing_interval === "YEAR" ? rowNet(row) + rowVat(row) : (rowNet(row) + rowVat(row)) * 12
+      net: recurringMonthlyMinor(row, net),
+      vat: recurringMonthlyMinor(row, vat),
+      annual: row.billing_interval === "YEAR" ? gross : gross * 12
     };
   });
   const sum = <T,>(items: T[], fn: (item: T) => number) => items.reduce((total, item) => total + fn(item), 0);
@@ -160,9 +155,9 @@ async function buildSnapshot(env: Env, salesOrderId: string): Promise<SigningSna
     },
     rows: normalizedRows,
     totals: {
-      one_time_net_minor: sum(oneTime, rowNet),
-      one_time_vat_minor: sum(oneTime, rowVat),
-      one_time_total_minor: sum(oneTime, (row) => rowNet(row) + rowVat(row)),
+      one_time_net_minor: sum(oneTime, lineNetMinor),
+      one_time_vat_minor: sum(oneTime, lineVatMinor),
+      one_time_total_minor: sum(oneTime, lineGrossMinor),
       recurring_monthly_net_minor: sum(recurringMonthlyRows, (row) => row.net),
       recurring_monthly_vat_minor: sum(recurringMonthlyRows, (row) => row.vat),
       recurring_monthly_total_minor: sum(recurringMonthlyRows, (row) => row.net + row.vat),
@@ -393,6 +388,13 @@ export async function confirmCustomerOrderPaymentMethod(env: Env, token: string)
 export async function activateCustomerOrder(env: Env, token: string) {
   const session = await sessionByToken(env, token);
   if (!session.signed_at) throw new PublicAppError(409, "Ordern måste signeras först.");
+  await env.DB.prepare(
+    `UPDATE customer_order_sessions
+     SET status=CASE WHEN status IN ('SIGNED','PAYMENT_METHOD_READY','ACTION_REQUIRED','PENDING_PAYMENT_CONFIRMATION') THEN 'ACTIVATING' ELSE status END,
+       activation_error=NULL,
+       updated_at=CURRENT_TIMESTAMP
+     WHERE id=? AND completed_at IS NULL`
+  ).bind(session.id).run();
   const subscriptions = await env.DB.prepare("SELECT * FROM subscriptions WHERE sales_order_id=? ORDER BY created_at").bind(session.sales_order_id).all<any>();
   let paymentAction = null;
   for (const subscription of subscriptions.results) {
@@ -404,9 +406,105 @@ export async function activateCustomerOrder(env: Env, token: string) {
     await env.DB.prepare("UPDATE customer_order_sessions SET status='ACTION_REQUIRED', activation_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(session.id).run();
     return { ...(await getCustomerOrderSessionForToken(env, token)), payment_action: paymentAction };
   }
-  await env.DB.prepare(
-    "UPDATE customer_order_sessions SET status='COMPLETED', completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP), activation_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?"
-  ).bind(session.id).run();
-  await audit(env, "SYSTEM", null, "CUSTOMER_ORDER_COMPLETED", "sales_order", session.sales_order_id, null, { customer_order_session_id: session.id });
+  const completion = await reconcileCustomerOrderCompletion(env, session.id);
+  if (!completion.completed) {
+    await env.DB.prepare(
+      `UPDATE customer_order_sessions
+       SET status=?, activation_error=?, updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND completed_at IS NULL`
+    ).bind(
+      completion.status,
+      completion.reason,
+      session.id
+    ).run();
+    return getCustomerOrderSessionForToken(env, token);
+  }
   return getCustomerOrderSessionForToken(env, token);
+}
+
+type CompletionEvaluation = {
+  completed: boolean;
+  status: "COMPLETED" | "ACTIVATING" | "PENDING_PAYMENT_CONFIRMATION" | "ACTION_REQUIRED";
+  reason: string | null;
+};
+
+export async function reconcileCustomerOrderCompletion(env: Env, sessionId: string): Promise<CompletionEvaluation> {
+  const session = await one<CustomerOrderSession>(env.DB, "SELECT * FROM customer_order_sessions WHERE id=?", sessionId);
+  if (!session) return { completed: false, status: "PENDING_PAYMENT_CONFIRMATION", reason: "Kundordern saknas." };
+  if (!session.signed_at) return { completed: false, status: "ACTIVATING", reason: "Ordern är inte signerad." };
+
+  const { snapshot } = await ensureSnapshot(env, session);
+  const hasRecurring = snapshot.rows.some((row) => row.billing_type === "RECURRING");
+  if (!hasRecurring) {
+    return completeCustomerOrder(env, session);
+  }
+
+  const paymentMethods = await env.DB.prepare(
+    "SELECT id FROM payment_methods WHERE customer_id=? AND provider='STRIPE' AND status='ACTIVE' ORDER BY is_default DESC, updated_at DESC LIMIT 1"
+  ).bind(session.customer_id).all<any>();
+  if (!session.payment_method_id && !paymentMethods.results.length) {
+    return { completed: false, status: "ACTIVATING", reason: "Betalmetod saknas." };
+  }
+
+  const subscriptions = await env.DB.prepare(
+    "SELECT * FROM subscriptions WHERE sales_order_id=? ORDER BY created_at"
+  ).bind(session.sales_order_id).all<any>();
+  const relevant = subscriptions.results.filter((subscription: any) => !["CANCELLED", "ENDED"].includes(String(subscription.status).toUpperCase()));
+  if (!relevant.length) return { completed: false, status: "ACTIVATING", reason: "Abonnemang saknas." };
+
+  for (const subscription of relevant) {
+    if (String(subscription.status).toUpperCase() !== "ACTIVE" || !subscription.stripe_subscription_id) {
+      return { completed: false, status: "PENDING_PAYMENT_CONFIRMATION", reason: "Väntar på aktivt abonnemang och Stripe-bekräftelse." };
+    }
+    const payments = await env.DB.prepare(
+      `SELECT p.*
+       FROM payments p
+       WHERE p.subscription_id=? AND p.provider='STRIPE' AND p.status='SUCCEEDED'
+       ORDER BY p.paid_at ASC, p.created_at ASC`
+    ).bind(subscription.id).all<any>();
+    if (!payments.results.length) {
+      return { completed: false, status: "PENDING_PAYMENT_CONFIRMATION", reason: "Väntar på bekräftad första abonnemangsbetalning." };
+    }
+    const initialPayment = payments.results[0];
+    const accounting = await one<{ count: number }>(
+      env.DB,
+      `SELECT COUNT(*) count
+       FROM accounting_events
+       WHERE event_type='SUBSCRIPTION_PAYMENT_RECEIVED'
+         AND entity_type='payment'
+         AND entity_id=?`,
+      initialPayment.id
+    );
+    if ((accounting?.count ?? 0) !== 1) {
+      return { completed: false, status: "PENDING_PAYMENT_CONFIRMATION", reason: "Väntar på canonical accounting event för abonnemangsbetalning." };
+    }
+  }
+
+  return completeCustomerOrder(env, session);
+}
+
+export async function reconcileCustomerOrderCompletionForSalesOrder(env: Env, salesOrderId?: string | null): Promise<void> {
+  if (!salesOrderId) return;
+  const sessions = await env.DB.prepare(
+    `SELECT id FROM customer_order_sessions
+     WHERE sales_order_id=? AND status IN ('ACTIVATING','PENDING_PAYMENT_CONFIRMATION','ACTION_REQUIRED','PAYMENT_METHOD_READY','SIGNED')`
+  ).bind(salesOrderId).all<{ id: string }>();
+  for (const session of sessions.results) {
+    await reconcileCustomerOrderCompletion(env, session.id);
+  }
+}
+
+async function completeCustomerOrder(env: Env, session: CustomerOrderSession): Promise<CompletionEvaluation> {
+  const result = await env.DB.prepare(
+    `UPDATE customer_order_sessions
+     SET status='COMPLETED', completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP), activation_error=NULL, updated_at=CURRENT_TIMESTAMP
+     WHERE id=? AND completed_at IS NULL`
+  ).bind(session.id).run();
+  if ((result.meta.changes ?? 0) === 1) {
+    await audit(env, "SYSTEM", null, "CUSTOMER_ORDER_COMPLETED", "sales_order", session.sales_order_id, null, { customer_order_session_id: session.id });
+  }
+  await env.DB.prepare(
+    "UPDATE sales_orders SET status='COMPLETED', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!='COMPLETED'"
+  ).bind(session.sales_order_id).run();
+  return { completed: true, status: "COMPLETED", reason: null };
 }

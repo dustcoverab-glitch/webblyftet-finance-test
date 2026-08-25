@@ -1,3 +1,5 @@
+import { calculateMoneyTotals, minorToMoney, moneyToMinor } from "./money";
+
 export type MoneyRow = {
   quantity: number;
   unit_price: number;
@@ -6,17 +8,15 @@ export type MoneyRow = {
 };
 
 export function calculate(rows: MoneyRow[]) {
-  let subtotal = 0;
-  let vatTotal = 0;
-  for (const row of rows) {
-    const gross = Number(row.quantity) * Number(row.unit_price);
-    const net = gross * (1 - Number(row.discount_percent ?? 0) / 100);
-    subtotal += net;
-    vatTotal += net * (Number(row.vat_percent ?? 25) / 100);
-  }
+  const totals = calculateMoneyTotals(rows.map((row) => ({
+    quantity: row.quantity,
+    unit_price_minor: moneyToMinor(row.unit_price),
+    discount_percent: row.discount_percent ?? 0,
+    vat_percent: row.vat_percent ?? 25
+  })));
   return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    vatTotal: Math.round(vatTotal * 100) / 100,
-    total: Math.round((subtotal + vatTotal) * 100) / 100
+    subtotal: minorToMoney(totals.subtotal),
+    vatTotal: minorToMoney(totals.vatTotal),
+    total: minorToMoney(totals.total)
   };
 }

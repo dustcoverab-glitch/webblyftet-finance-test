@@ -13,11 +13,11 @@ describe("calculate", () => {
     });
   });
 
-  it("rounds to two decimals", () => {
+  it("normalizes unit prices to minor units before applying quantity", () => {
     expect(calculate([{ quantity: 3, unit_price: 19.995, vat_percent: 25 }])).toEqual({
-      subtotal: 59.99,
+      subtotal: 60,
       vatTotal: 15,
-      total: 74.98
+      total: 75
     });
   });
 });

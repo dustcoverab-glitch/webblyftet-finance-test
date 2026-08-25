@@ -1,5 +1,6 @@
 import { id, one } from "../lib/db";
 import { PublicAppError } from "../lib/app-error";
+import { subscriptionMonthlyAmount } from "../lib/money";
 
 export const subscriptionStatuses = ["DRAFT", "PENDING", "ACTIVE", "PAST_DUE", "PAUSED", "CANCELLED", "ENDED"] as const;
 export const paymentStatuses = ["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"] as const;
@@ -59,12 +60,7 @@ export function validatePriceInput(input: CreatePriceInput): void {
   }
 }
 
-export function subscriptionMonthlyAmount(items: Array<{ unit_amount: number; quantity: number; billing_interval?: string | null }>): number {
-  return items.reduce((sum, item) => {
-    if (item.billing_interval === "YEAR") return sum + Math.round((item.unit_amount * item.quantity) / 12);
-    return sum + item.unit_amount * item.quantity;
-  }, 0);
-}
+export { subscriptionMonthlyAmount };
 
 export async function createProduct(env: Env, input: CreateProductInput) {
   const productId = id("prod");

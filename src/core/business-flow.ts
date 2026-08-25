@@ -3,6 +3,7 @@ import { PublicAppError } from "../lib/app-error";
 import { sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
 import { WEBBLYFTET_TERMS_VERSION } from "../documents/terms";
+import { calculateMoneyTotals, minorToMoney, moneyToMinor } from "../lib/money";
 
 export type OfferInputRow = {
   product_id?: string | null;
@@ -44,24 +45,8 @@ type SnapshotRow = {
   billing_interval: "MONTH" | "YEAR" | null;
 };
 
-function moneyToMinor(value: number): number {
-  return Math.round(Number(value) * 100);
-}
-
-function minorToMoney(value: number): number {
-  return Math.round(value) / 100;
-}
-
 function calculateMinor(rows: SnapshotRow[]) {
-  let subtotal = 0;
-  let vatTotal = 0;
-  for (const row of rows) {
-    const gross = row.unit_price_minor * row.quantity;
-    const net = Math.round(gross * (1 - row.discount_percent / 100));
-    subtotal += net;
-    vatTotal += Math.round(net * (row.vat_percent / 100));
-  }
-  return { subtotal, vatTotal, total: subtotal + vatTotal };
+  return calculateMoneyTotals(rows);
 }
 
 export async function createOffer(env: Env, input: CreateOfferInput) {

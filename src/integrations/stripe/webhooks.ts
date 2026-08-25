@@ -7,6 +7,7 @@ import { handledStripeEvents } from "./types";
 import { stripeWebhookSecret } from "../../lib/config";
 import { invoicePaymentFromInvoice, retrieveInvoicePaymentDetails } from "./invoice-payments";
 import { stringifyLogValue } from "../../lib/security";
+import { reconcileCustomerOrderCompletionForSalesOrder } from "../../core/customer-order";
 
 export async function constructStripeWebhookEvent(env: Env, rawBody: string, signature: string | null): Promise<Stripe.Event> {
   const webhookSecret = stripeWebhookSecret(env);
@@ -234,6 +235,7 @@ async function handleStripeInvoicePaid(env: Env, invoice: Stripe.Invoice) {
       period_end: stripeTimestampToIso(invoice.period_end)
     }
   });
+  await reconcileCustomerOrderCompletionForSalesOrder(env, subscription.sales_order_id);
 }
 
 async function handleStripeInvoicePaymentFailed(env: Env, invoice: Stripe.Invoice) {
@@ -263,6 +265,7 @@ async function handleStripeInvoicePaymentFailed(env: Env, invoice: Stripe.Invoic
       stripe_subscription_id: subscriptionId
     }
   });
+  await reconcileCustomerOrderCompletionForSalesOrder(env, subscription.sales_order_id);
 }
 
 async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, status: "SUCCEEDED" | "FAILED") {
@@ -382,6 +385,7 @@ async function syncStripeSubscription(env: Env, stripeSubscription: Stripe.Subsc
     raw.cancel_at_period_end ? 1 : 0,
     existing.id
   ).run();
+  await reconcileCustomerOrderCompletionForSalesOrder(env, existing.sales_order_id);
 }
 
 function localSubscriptionStatus(status: Stripe.Subscription.Status, deleted: boolean): typeof import("../../core/finance").subscriptionStatuses[number] {

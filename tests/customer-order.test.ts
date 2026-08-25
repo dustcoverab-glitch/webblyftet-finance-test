@@ -13,6 +13,7 @@ import {
   signCustomerOrder
 } from "../src/core/customer-order";
 import { createPrice, createProduct } from "../src/core/finance";
+import { processStripeEvent } from "../src/integrations/stripe/webhooks";
 import { resetTables, workerEnv } from "./helpers";
 
 describe("Customer order onboarding", () => {
@@ -128,6 +129,172 @@ describe("Customer order onboarding", () => {
     expect(completed.requirements.payment_method_required).toBe(false);
   });
 
+  it("does not complete recurring customer orders until subscription, payment and accounting are canonical", async () => {
+    const order = await seedAcceptedOrder();
+    const link = await createCustomerOrderSession(workerEnv(), order.id);
+    const token = link.url.split("/customer-order/")[1];
+    await signCustomerOrder(workerEnv(), token, { signer_name: "Kund", signer_email: "buyer@example.com" });
+    await attachPaymentMethod(link.id);
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("/v1/customers")
+        ? { id: "cus_customer_order_stripe", object: "customer" }
+        : url.includes("/v1/products")
+          ? { id: "prod_customer_order", object: "product" }
+          : url.includes("/v1/prices")
+            ? { id: "price_customer_order", object: "price" }
+            : { id: "sub_customer_order", object: "subscription", status: "active", cancel_at_period_end: false };
+      return Response.json(body);
+    }));
+
+    const activating = await activateCustomerOrder(workerEnv(), token);
+    expect(activating.status).toBe("PENDING_PAYMENT_CONFIRMATION");
+    expect(activating.completed_at).toBeFalsy();
+
+    const subscription = await env.DB.prepare("SELECT id FROM subscriptions WHERE sales_order_id=?")
+      .bind(order.id)
+      .first<{ id: string }>();
+    await processStripeEvent(workerEnv(), stripeEvent("evt_customer_order_sub_active", "customer.subscription.updated", {
+      id: "sub_customer_order",
+      object: "subscription",
+      status: "active",
+      current_period_start: 1787241600,
+      current_period_end: 1789920000,
+      cancel_at_period_end: false,
+      metadata: { webblyftet_subscription_id: subscription!.id }
+    }));
+    const stillPending = await getCustomerOrderSessionForToken(workerEnv(), token);
+    expect(stillPending.status).toBe("PENDING_PAYMENT_CONFIRMATION");
+
+    await processStripeEvent(workerEnv(), stripeEvent("evt_customer_order_invoice_paid", "invoice.paid", {
+      id: "in_customer_order",
+      object: "invoice",
+      amount_paid: 25000,
+      total: 25000,
+      currency: "sek",
+      subscription: "sub_customer_order",
+      payment_intent: "pi_customer_order",
+      period_start: 1787241600,
+      period_end: 1789920000,
+      status_transitions: { paid_at: 1787241600 }
+    }));
+    await processStripeEvent(workerEnv(), stripeEvent("evt_customer_order_invoice_paid_replay", "invoice.paid", {
+      id: "in_customer_order",
+      object: "invoice",
+      amount_paid: 25000,
+      total: 25000,
+      currency: "sek",
+      subscription: "sub_customer_order",
+      payment_intent: "pi_customer_order",
+      period_start: 1787241600,
+      period_end: 1789920000,
+      status_transitions: { paid_at: 1787241600 }
+    }));
+
+    const completed = await getCustomerOrderSessionForToken(workerEnv(), token);
+    const counts = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) count FROM payments WHERE provider_payment_id='in_customer_order'").first<{ count: number }>(),
+      env.DB.prepare("SELECT COUNT(*) count FROM accounting_events WHERE event_type='SUBSCRIPTION_PAYMENT_RECEIVED'").first<{ count: number }>()
+    ]);
+    expect(completed.status).toBe("COMPLETED");
+    expect(completed.completed_at).toBeTruthy();
+    expect(counts.map((row) => row?.count)).toEqual([1, 1]);
+  });
+
+  it("keeps recurring customer orders pending when first payment fails", async () => {
+    const order = await seedAcceptedOrder();
+    const link = await createCustomerOrderSession(workerEnv(), order.id);
+    const token = link.url.split("/customer-order/")[1];
+    await signCustomerOrder(workerEnv(), token, { signer_name: "Kund", signer_email: "buyer@example.com" });
+    await attachPaymentMethod(link.id);
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("/v1/customers")
+        ? { id: "cus_customer_order_failed", object: "customer" }
+        : url.includes("/v1/products")
+          ? { id: "prod_customer_order_failed", object: "product" }
+          : url.includes("/v1/prices")
+            ? { id: "price_customer_order_failed", object: "price" }
+            : { id: "sub_customer_order_failed", object: "subscription", status: "incomplete", cancel_at_period_end: false };
+      return Response.json(body);
+    }));
+
+    const activating = await activateCustomerOrder(workerEnv(), token);
+    expect(activating.status).toBe("PENDING_PAYMENT_CONFIRMATION");
+    const subscription = await env.DB.prepare("SELECT id FROM subscriptions WHERE sales_order_id=?")
+      .bind(order.id)
+      .first<{ id: string }>();
+    await processStripeEvent(workerEnv(), stripeEvent("evt_customer_order_invoice_failed", "invoice.payment_failed", {
+      id: "in_customer_order_failed",
+      object: "invoice",
+      amount_due: 25000,
+      total: 25000,
+      currency: "sek",
+      subscription: "sub_customer_order_failed",
+      payment_intent: "pi_customer_order_failed"
+    }));
+    await processStripeEvent(workerEnv(), stripeEvent("evt_customer_order_sub_failed", "customer.subscription.updated", {
+      id: "sub_customer_order_failed",
+      object: "subscription",
+      status: "past_due",
+      cancel_at_period_end: false,
+      metadata: { webblyftet_subscription_id: subscription!.id }
+    }));
+
+    const pending = await getCustomerOrderSessionForToken(workerEnv(), token);
+    expect(pending.status).toBe("PENDING_PAYMENT_CONFIRMATION");
+    expect(pending.completed_at).toBeFalsy();
+  });
+
+  it("keeps requires_action customer orders out of COMPLETED", async () => {
+    const order = await seedAcceptedOrder();
+    const link = await createCustomerOrderSession(workerEnv(), order.id);
+    const token = link.url.split("/customer-order/")[1];
+    await signCustomerOrder(workerEnv(), token, { signer_name: "Kund", signer_email: "buyer@example.com" });
+    await attachPaymentMethod(link.id);
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("/v1/customers")
+        ? { id: "cus_customer_order_action", object: "customer" }
+        : url.includes("/v1/products")
+          ? { id: "prod_customer_order_action", object: "product" }
+          : url.includes("/v1/prices")
+            ? { id: "price_customer_order_action", object: "price" }
+            : url.includes("/v1/invoice_payments")
+              ? {
+                  object: "list",
+                  data: [{
+                    id: "inpay_customer_order_action",
+                    is_default: true,
+                    payment: {
+                      type: "payment_intent",
+                      payment_intent: {
+                        id: "pi_customer_order_action",
+                        object: "payment_intent",
+                        status: "requires_action",
+                        client_secret: "pi_customer_order_action_secret"
+                      }
+                    }
+                  }]
+                }
+              : {
+                  id: "sub_customer_order_action",
+                  object: "subscription",
+                  status: "incomplete",
+                  latest_invoice: { id: "in_customer_order_action", object: "invoice" }
+                };
+      return Response.json(body);
+    }));
+
+    const result = await activateCustomerOrder(workerEnv(), token);
+    expect(result.status).toBe("ACTION_REQUIRED");
+    expect((result as any).payment_action).toMatchObject({ required: true, type: "STRIPE_CONFIRMATION" });
+    expect(result.completed_at).toBeFalsy();
+  });
+
   it("allows only the exact customer-order public prefix without opening api routes", async () => {
     const order = await seedAcceptedOrder();
     const link = await createCustomerOrderSession(workerEnv(), order.id);
@@ -202,4 +369,31 @@ async function seedAcceptedOrder(options: { recurring?: boolean } = {}) {
     accepted_by_name: "Intern accept",
     accepted_by_email: "seller@example.com"
   }) as Promise<any>;
+}
+
+async function attachPaymentMethod(sessionId: string) {
+  const session = await env.DB.prepare("SELECT customer_id FROM customer_order_sessions WHERE id=?")
+    .bind(sessionId)
+    .first<{ customer_id: string }>();
+  await env.DB.prepare("UPDATE customers SET stripe_customer_id=? WHERE id=?")
+    .bind("cus_customer_order_stripe", session!.customer_id)
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO payment_methods(id,customer_id,provider,provider_payment_method_id,type,brand,last4,exp_month,exp_year,status,is_default)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind("pm_customer_order_attached", session!.customer_id, "STRIPE", "pm_customer_order_card", "card", "visa", "4242", 12, 2030, "ACTIVE", 1).run();
+  await env.DB.prepare(
+    `UPDATE customer_order_sessions
+     SET payment_method_id=?, payment_method_brand='visa', payment_method_last4='4242', payment_method_exp_month=12, payment_method_exp_year=2030, status='PAYMENT_METHOD_READY'
+     WHERE id=?`
+  ).bind("pm_customer_order_card", sessionId).run();
+}
+
+function stripeEvent(id: string, type: string, object: Record<string, unknown>) {
+  return {
+    id,
+    object: "event",
+    type,
+    data: { object }
+  } as any;
 }
