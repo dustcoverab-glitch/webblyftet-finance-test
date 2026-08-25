@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createExecutionContext } from "cloudflare:test";
 import worker from "../src/worker";
 import { resetTables, workerEnv } from "./helpers";
-import { redactSensitiveText, sanitizeForLog } from "../src/lib/security";
+import { isPublicRoute, redactSensitiveText, sanitizeForLog } from "../src/lib/security";
 
 describe("API health and Access middleware", () => {
   beforeEach(async () => {
@@ -62,7 +62,7 @@ describe("API health and Access middleware", () => {
   it("can explicitly allow an initial workers.dev test deployment without Access", async () => {
     const response = await worker.fetch(
       new Request("https://finance-test.example/api/health"),
-      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "false" } as any),
+      workerEnv({ APP_ENV: "local", REQUIRE_CLOUDFLARE_ACCESS: "false" } as any),
       createExecutionContext()
     );
 
@@ -85,7 +85,7 @@ describe("API health and Access middleware", () => {
       workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
       createExecutionContext()
     );
-    expect(getExact.status).toBe(404);
+    expect(getExact.status).toBe(403);
 
     for (const path of ["/webhooks/stripe/foo", "/webhooks/stripe-test"]) {
       const response = await worker.fetch(
@@ -100,9 +100,10 @@ describe("API health and Access middleware", () => {
     }
   });
 
-  it("bypasses Cloudflare Access for customer-order token routes only", async () => {
+  it("bypasses Cloudflare Access only for explicitly allowed customer-order routes", async () => {
+    const token = "abcdefghijklmnopqrstuvwxyz_1234567890";
     const tokenRoute = await worker.fetch(
-      new Request("https://finance-test.example/customer-order/not-a-real-token/session"),
+      new Request(`https://finance-test.example/customer-order/${token}/session`),
       workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
       createExecutionContext()
     );
@@ -115,7 +116,15 @@ describe("API health and Access middleware", () => {
     );
     expect(publicCustomerAsset.status).not.toBe(403);
 
-    for (const path of ["/customer-order-test", "/customer-orders/not-a-real-token/session", "/assets/internal-admin.js", "/api/dashboard"]) {
+    for (const path of [
+      "/customer-order-test",
+      "/customer-orders/not-a-real-token/session",
+      "/customer-order/internal",
+      `/customer-order/${token}/admin`,
+      "/customer-order/foo/admin",
+      "/assets/internal-admin.js",
+      "/api/dashboard"
+    ]) {
       const response = await worker.fetch(
         new Request(`https://finance-test.example${path}`),
         workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
@@ -125,10 +134,27 @@ describe("API health and Access middleware", () => {
     }
   });
 
+  it("classifies public routes by exact method and route shape", () => {
+    const token = "abcdefghijklmnopqrstuvwxyz_1234567890";
+    expect(isPublicRoute("GET", `/customer-order/${token}`)).toBe(true);
+    expect(isPublicRoute("GET", `/customer-order/${token}/session`)).toBe(true);
+    expect(isPublicRoute("POST", `/customer-order/${token}/sign`)).toBe(true);
+    expect(isPublicRoute("GET", "/customer-order-assets/customer-order.js")).toBe(true);
+    expect(isPublicRoute("POST", "/webhooks/stripe")).toBe(true);
+
+    expect(isPublicRoute("GET", "/webhooks/stripe")).toBe(false);
+    expect(isPublicRoute("GET", "/webhooks/stripe/foo")).toBe(false);
+    expect(isPublicRoute("GET", "/webhooks/stripe-test")).toBe(false);
+    expect(isPublicRoute("GET", "/customer-order-test")).toBe(false);
+    expect(isPublicRoute("GET", "/customer-order/internal")).toBe(false);
+    expect(isPublicRoute("GET", `/customer-order/${token}/admin`)).toBe(false);
+    expect(isPublicRoute("GET", "/api/dashboard")).toBe(false);
+  });
+
   it("applies security headers", async () => {
     const response = await worker.fetch(
       new Request("https://finance-test.example/api/health"),
-      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "false" } as any),
+      workerEnv({ APP_ENV: "local" } as any),
       createExecutionContext()
     );
 
@@ -163,10 +189,10 @@ describe("API health and Access middleware", () => {
     const badTypeResponse = await worker.fetch(
       new Request("https://finance-test.example/api/receipts", {
         method: "POST",
-        headers: { origin: "https://finance-test.example" },
+        headers: { origin: "https://finance-test.example", "x-test-user-email": "admin@example.test" },
         body: badType
       }),
-      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "false" } as any),
+      workerEnv({ APP_ENV: "local", REQUIRE_CLOUDFLARE_ACCESS: "false" } as any),
       createExecutionContext()
     );
     expect(badTypeResponse.status).toBe(415);
@@ -176,10 +202,10 @@ describe("API health and Access middleware", () => {
     const tooLargeResponse = await worker.fetch(
       new Request("https://finance-test.example/api/receipts", {
         method: "POST",
-        headers: { origin: "https://finance-test.example" },
+        headers: { origin: "https://finance-test.example", "x-test-user-email": "admin@example.test" },
         body: tooLarge
       }),
-      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "false", MAX_RECEIPT_UPLOAD_BYTES: "5" } as any),
+      workerEnv({ APP_ENV: "local", MAX_RECEIPT_UPLOAD_BYTES: "5" } as any),
       createExecutionContext()
     );
     expect(tooLargeResponse.status).toBe(413);

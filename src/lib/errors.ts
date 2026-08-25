@@ -2,8 +2,9 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { id } from "./db";
 import { PublicAppError } from "./app-error";
+import { emitOperationalAlert } from "./operations";
 
-export function errorJson(c: Context<{ Bindings: Env }>, error: unknown): Response {
+export async function errorJson(c: Context<{ Bindings: Env }>, error: unknown): Promise<Response> {
   if (error instanceof PublicAppError) {
     return c.json({ error: error.publicMessage, request_id: error.requestId }, error.status as any);
   }
@@ -14,6 +15,18 @@ export function errorJson(c: Context<{ Bindings: Env }>, error: unknown): Respon
   }
 
   console.error("Unhandled request error", { requestId, message: error instanceof Error ? error.message : String(error) });
+  await emitOperationalAlert(c.env, {
+    event_type: "WORKER_UNHANDLED_ERROR",
+    severity: "ERROR",
+    message: "Unhandled Worker request error",
+    request_id: requestId,
+    dedupe_key: `WORKER_UNHANDLED_ERROR:${new URL(c.req.url).pathname}`,
+    details: {
+      path: new URL(c.req.url).pathname,
+      method: c.req.method,
+      message: error instanceof Error ? error.message : String(error)
+    }
+  }).catch(() => undefined);
   return c.json({ error: "Ett internt fel uppstod.", request_id: requestId }, 500);
 }
 

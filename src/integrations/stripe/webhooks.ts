@@ -8,6 +8,7 @@ import { stripeWebhookSecret } from "../../lib/config";
 import { invoicePaymentFromInvoice, retrieveInvoicePaymentDetails } from "./invoice-payments";
 import { stringifyLogValue } from "../../lib/security";
 import { reconcileCustomerOrderCompletionForSalesOrder } from "../../core/customer-order";
+import { emitOperationalAlert } from "../../lib/operations";
 
 export async function constructStripeWebhookEvent(env: Env, rawBody: string, signature: string | null): Promise<Stripe.Event> {
   const webhookSecret = stripeWebhookSecret(env);
@@ -88,6 +89,18 @@ export async function processStripeEvent(env: Env, event: Stripe.Event) {
     await env.DB.prepare(
       "UPDATE integration_events SET status='FAILED', error_message=?, processed_at=CURRENT_TIMESTAMP WHERE provider=? AND provider_event_id=?"
     ).bind(error instanceof Error ? error.message : String(error), "STRIPE", event.id).run();
+    await emitOperationalAlert(env, {
+      event_type: "STRIPE_WEBHOOK_ERROR",
+      severity: "ERROR",
+      message: "Stripe webhook processing failed",
+      provider: "STRIPE",
+      provider_event_id: event.id,
+      dedupe_key: `STRIPE_WEBHOOK_ERROR:${event.id}`,
+      details: {
+        event_type: event.type,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }).catch(() => undefined);
     throw error;
   }
 }
@@ -235,6 +248,23 @@ async function handleStripeInvoicePaid(env: Env, invoice: Stripe.Invoice) {
       period_end: stripeTimestampToIso(invoice.period_end)
     }
   });
+  await emitOperationalAlert(env, {
+    event_type: "STRIPE_PAYMENT_FAILED",
+    severity: "ERROR",
+    message: "Stripe subscription invoice payment failed",
+    customer_id: subscription.customer_id,
+    sales_order_id: subscription.sales_order_id,
+    subscription_id: subscription.id,
+    provider: "STRIPE",
+    provider_event_id: invoice.id,
+    dedupe_key: `STRIPE_PAYMENT_FAILED:${invoice.id}`,
+    details: {
+      stripe_invoice_id: invoice.id,
+      stripe_subscription_id: subscriptionId,
+      amount_due: invoice.amount_due,
+      status: invoice.status
+    }
+  }).catch(() => undefined);
   await reconcileCustomerOrderCompletionForSalesOrder(env, subscription.sales_order_id);
 }
 
@@ -329,6 +359,25 @@ async function handlePaymentIntent(env: Env, intent: Stripe.PaymentIntent, statu
       recurring_diagnostic_only: isRecurringDiagnostic
     }
   });
+  if (status === "FAILED") {
+    await emitOperationalAlert(env, {
+      event_type: "STRIPE_PAYMENT_FAILED",
+      severity: "ERROR",
+      message: "Stripe PaymentIntent failed",
+      customer_id: customerId,
+      subscription_id: subscription?.id ?? null,
+      provider: "STRIPE",
+      provider_event_id: intent.id,
+      dedupe_key: `STRIPE_PAYMENT_FAILED:${intent.id}`,
+      details: {
+        stripe_payment_intent_id: intent.id,
+        stripe_invoice_id: recurringInvoiceId,
+        recurring_diagnostic_only: isRecurringDiagnostic,
+        status: intent.status,
+        last_payment_error: intent.last_payment_error
+      }
+    }).catch(() => undefined);
+  }
   if (isRecurringDiagnostic) return;
   if (payment?.status === "SUCCEEDED") {
     const gross = intent.amount_received || intent.amount;

@@ -3,6 +3,7 @@ import { id, one } from "../../lib/db";
 import { PublicAppError } from "../../lib/app-error";
 import { fortnoxClientId, fortnoxClientSecret, isFortnoxConfigured, requireFortnoxConfigured } from "../../lib/config";
 import { stringifyLogValue } from "../../lib/security";
+import { emitOperationalAlert } from "../../lib/operations";
 
 type Connection = {
   id: string;
@@ -250,6 +251,20 @@ export async function fortnoxRequest<T>(
   ).run();
 
   if (!response.ok) {
+    await emitOperationalAlert(env, {
+      event_type: response.status === 401 || response.status === 403 ? "FORTNOX_AUTH_FAILED" : "FORTNOX_SYNC_FAILED",
+      severity: response.status >= 500 ? "ERROR" : "WARNING",
+      message: "Fortnox API request failed",
+      provider: "FORTNOX",
+      request_id: syncId,
+      dedupe_key: `FORTNOX:${init.method ?? "GET"}:${path}:${response.status}`,
+      details: {
+        endpoint,
+        method: init.method ?? "GET",
+        status: response.status,
+        response: parsed
+      }
+    }).catch(() => undefined);
     throw new FortnoxApiError(
       response.status >= 500 ? 502 : response.status,
       `Fortnox-anropet misslyckades. Referens: ${syncId}`,
@@ -307,6 +322,24 @@ export async function uploadInboxFile(
   ).run();
 
   if (!response.ok) {
+    await emitOperationalAlert(env, {
+      event_type: response.status === 401 || response.status === 403 ? "FORTNOX_AUTH_FAILED" : "FORTNOX_SYNC_FAILED",
+      severity: response.status >= 500 ? "ERROR" : "WARNING",
+      message: "Fortnox Inbox upload failed",
+      provider: "FORTNOX",
+      request_id: syncId,
+      dedupe_key: `FORTNOX_INBOX:POST:${folderId}:${response.status}`,
+      details: {
+        endpoint,
+        folder,
+        folder_id: folderId,
+        filename: file.name,
+        mime_type: file.type,
+        size: file.size,
+        status: response.status,
+        response: parsed
+      }
+    }).catch(() => undefined);
     throw new FortnoxApiError(
       response.status >= 500 ? 502 : response.status,
       `Fortnox Inbox-uppladdningen misslyckades. Referens: ${syncId}`,
@@ -369,6 +402,20 @@ export async function retrieveInboxFile(env: Env, fileId: string) {
   ).run();
 
   if (!response.ok) {
+    await emitOperationalAlert(env, {
+      event_type: response.status === 401 || response.status === 403 ? "FORTNOX_AUTH_FAILED" : "FORTNOX_SYNC_FAILED",
+      severity: response.status >= 500 ? "ERROR" : "WARNING",
+      message: "Fortnox Inbox file verification failed",
+      provider: "FORTNOX",
+      request_id: syncId,
+      dedupe_key: `FORTNOX_INBOX:GET:${fileId}:${response.status}`,
+      details: {
+        endpoint,
+        file_id: fileId,
+        status: response.status,
+        response: parsed
+      }
+    }).catch(() => undefined);
     throw new FortnoxApiError(
       response.status >= 500 ? 502 : response.status,
       `Fortnox Inbox-filen kunde inte verifieras. Referens: ${syncId}`,

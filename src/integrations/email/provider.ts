@@ -2,6 +2,7 @@ import { emailFrom, emailFromName, emailReplyTo, resendApiKey } from "../../lib/
 import { id } from "../../lib/db";
 import { PublicAppError } from "../../lib/app-error";
 import { stringifyLogValue } from "../../lib/security";
+import { emitOperationalAlert } from "../../lib/operations";
 
 export type EmailType = "OFFER" | "INVOICE" | "CONFIRMATION";
 export type EmailDeliveryStatus = "PENDING" | "SENT" | "FAILED";
@@ -90,6 +91,22 @@ export class ResendEmailProvider implements EmailProvider {
     if (!response.ok) {
       const errorCode = String((body as ResendErrorBody).name ?? (body as ResendErrorBody).error ?? `HTTP_${response.status}`);
       const errorMessage = String((body as ResendErrorBody).message ?? "Resend accepterade inte meddelandet.");
+      await emitOperationalAlert(this.env, {
+        event_type: "EMAIL_SEND_FAILED",
+        severity: "ERROR",
+        message: "Resend email delivery request failed",
+        provider: this.provider,
+        dedupe_key: `EMAIL_SEND_FAILED:${message.type}:${message.to}:${errorCode}`,
+        details: {
+          type: message.type,
+          to: message.to,
+          subject: message.subject,
+          status: response.status,
+          error_code: errorCode,
+          error_message: errorMessage,
+          tags: message.tags
+        }
+      }).catch(() => undefined);
       throw new PublicAppError(response.status >= 400 && response.status < 600 ? response.status : 502, `${errorCode}: ${errorMessage}`);
     }
     const messageId = String(body?.id ?? "");

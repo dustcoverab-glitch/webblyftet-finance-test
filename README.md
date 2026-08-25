@@ -286,7 +286,23 @@ Interna API-routes:
 - `PUT /api/contract-flows/:id/draft`
 - `POST /api/contract-flows/:id/customer-link`
 
-Alla `/contract-flow/*` och `/api/contract-flows*` är interna och ska ligga bakom Cloudflare Access. Endast den frysta kundresan på `/customer-order/*` får vara publik via token.
+Alla `/contract-flow/*` och `/api/contract-flows*` är interna och ska ligga bakom Cloudflare Access. Kundresan är publik endast genom den explicita allowlisten i säkerhetslagret; nya routes under `/customer-order/` blir inte publika automatiskt.
+
+Publik allowlist:
+
+- `GET /customer-order/:token`
+- `GET /customer-order/:token/session`
+- `GET /customer-order/:token/offer-document`
+- `GET /customer-order/:token/stripe-config`
+- `POST /customer-order/:token/review`
+- `POST /customer-order/:token/sign`
+- `POST /customer-order/:token/payment-method/setup`
+- `POST /customer-order/:token/payment-method/confirm`
+- `POST /customer-order/:token/activate`
+- `GET /customer-order-assets/*`
+- `POST /webhooks/stripe`
+
+Närliggande paths som `/customer-order-test`, `/customer-order/:token/admin`, `/webhooks/stripe/foo`, `/assets/*` och `/api/*` ska fortsatt kräva Cloudflare Access.
 
 Framtida portalintegration ska skicka ett `ContractFlowHandoff`-payload till `POST /api/contract-flows` med service-to-service-auth framför endpointen. Den endpointen är inte publik. Handoff-payloaden innehåller källa, säljare, kunduppgifter, kontaktperson, rader och anteckningar. Finance matchar kund först på `source_customer_id`, därefter organisationsnummer, och skapar annars en ny lokal kund när säljaren fryser kundlänken.
 
@@ -315,6 +331,7 @@ npm run cf-types
 npm run typecheck
 npm test
 npm run build
+npx wrangler deploy --env test --dry-run
 npm run db:migrate:test
 npm run deploy
 ```
@@ -355,6 +372,7 @@ Rör inte riktiga Fortnox-data i den här testmiljön.
 - `.dev.vars` är gitignored
 - inga secrets eller tokens i repo
 - Cloudflare Access skyddar deployad test/staging
+- server-side authorization kräver explicit roll/permission ovanpå Cloudflare Access
 - inga credentials skickas till frontend
 - OAuth state är one-time och rensas vid expiry
 - callback visar neutral felsida vid fel
@@ -365,6 +383,83 @@ Rör inte riktiga Fortnox-data i den här testmiljön.
 - sync-loggar får request/sync-ID men inte Authorization headers eller tokens
 - R2-filer exponeras endast genom Worker route
 - signerade offertvärden HTML-escapas innan rendering
+
+### Authorization
+
+Cloudflare Access är första autentiseringslagret. Workern läser verifierad Access-email och mappar den centralt via miljövariabler:
+
+- `ADMIN_EMAILS`
+- `FINANCE_EMAILS`
+- `SELLER_EMAILS`
+- `READ_ONLY_EMAILS`
+
+En Access-authenticated email som inte finns i mappingen får `READ_ONLY`, aldrig implicit admin. Lokal utveckling kan använda `LOCAL_DEV_EMAIL` eller testheadern `x-test-user-email`.
+
+Rollmatris:
+
+| Roll | Permissions |
+| --- | --- |
+| `ADMIN` | Alla permissions |
+| `FINANCE` | `customers.read`, `offers.read`, `invoices.read`, `invoices.write`, `subscriptions.manage`, `fortnox.sync`, `receipts.manage`, `bookkeeping.read` |
+| `SELLER` | `customers.read`, `customers.write`, `offers.read`, `offers.write`, `contract_flow.write`, `invoices.read`, `subscriptions.manage` |
+| `READ_ONLY` | `customers.read`, `offers.read`, `invoices.read`, `bookkeeping.read` |
+
+Viktiga permissions:
+
+- `fortnox.disconnect` krävs för att koppla från Fortnox.
+- `fortnox.sync` krävs för Fortnox push/pull.
+- `receipts.manage` krävs för kvittofil och R2-hämtning.
+- `admin.manage` är reserverad för framtida adminfunktioner.
+
+### CI och Release Check
+
+GitHub Actions kör på push och pull request:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec wrangler types
+pnpm run typecheck
+pnpm test
+pnpm exec vitest run tests/security.test.ts tests/authorization.test.ts tests/observability.test.ts
+pnpm run build
+pnpm exec wrangler deploy --env test --dry-run
+```
+
+Rekommenderad branch protection för `main`:
+
+- Require status checks från CI.
+- Require pull request före merge när fler än en person arbetar aktivt i repot.
+- Blockera merge om typecheck, full testsuite, security tests eller build failar.
+
+CI är canonical full-suite runtime. Om lokal Codex-runtime får loopback/sandbox-problem med Miniflare ska CI-resultatet användas som release-gate, men lokala fel ska dokumenteras och inte ignoreras tyst.
+
+### Operational Incidents
+
+Audit log svarar på “vem gjorde vad”. Operational events svarar på “vad gick fel i systemet”. Operational events sparas i `operational_events` och innehåller severity, dedupe key, correlation IDs och maskade detaljer.
+
+Severity:
+
+- `INFO`: informativt driftläge
+- `WARNING`: potentiellt problem eller extern 4xx utan ekonomisk risk
+- `ERROR`: providerfel som kräver åtgärd eller retry
+- `CRITICAL`: möjlig ekonomisk inkonsistens, duplicate-risk eller kritisk provider outage
+
+Eventtyper:
+
+- `STRIPE_WEBHOOK_ERROR`
+- `STRIPE_PAYMENT_FAILED`
+- `FORTNOX_SYNC_FAILED`
+- `FORTNOX_AUTH_FAILED`
+- `EMAIL_SEND_FAILED`
+- `EMAIL_BOUNCED`
+- `CUSTOMER_ORDER_STALLED`
+- `WORKER_UNHANDLED_ERROR`
+
+Incidentguide:
+
+- Stripe failed: kontrollera `/api/operational-health`, `integration_events`, `payment_attempts` och Stripe Dashboard testmode. Skapa inte manuell payment innan webhook/idempotency-läget är förstått.
+- Fortnox failed: kontrollera `/api/operational-health`, `sync_log`, tenant/sandboxstatus och senaste Fortnox HTTP-status. Vid mappingfel, skapa inte ny remote resurs utan recovery-policy.
+- Resend failed: kontrollera `outbound_email_events`, `sync_log` och `/api/operational-health`. UI får bara visa skickat när provider har accepterat och email event är `SENT`.
 
 ## Kvar innan skarp test
 

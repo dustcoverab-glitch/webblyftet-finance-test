@@ -113,9 +113,9 @@ describe("Stripe integration foundation", () => {
   it("reports Stripe as unconfigured without blocking the app", async () => {
     const response = await worker.fetch(
       new Request("https://finance.example/api/stripe/config", {
-        headers: { "cf-access-authenticated-user-email": "tester@example.com" }
+        headers: { "x-test-user-email": "admin@example.test" }
       }),
-      workerEnv({ APP_ENV: "test", STRIPE_SECRET_KEY: "", STRIPE_WEBHOOK_SECRET: "" } as any),
+      workerEnv({ APP_ENV: "local", STRIPE_SECRET_KEY: "", STRIPE_WEBHOOK_SECRET: "" } as any),
       {} as ExecutionContext
     );
 

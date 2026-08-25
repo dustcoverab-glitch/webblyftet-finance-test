@@ -308,7 +308,7 @@ describe("Contract flow handoff", () => {
     expect(apiResponse.status).toBe(403);
 
     const publicPrefixResponse = await worker.fetch(
-      new Request("https://finance-test.example/customer-order/not-real/session"),
+      new Request("https://finance-test.example/customer-order/not-real-token-123456789/session"),
       workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
       createExecutionContext()
     );

@@ -9,9 +9,9 @@ describe("optional external integration configuration", () => {
   it("reports Fortnox as unconfigured without blocking integration status", async () => {
     const response = await worker.fetch(
       new Request("https://finance.example/api/integration/status", {
-        headers: { "cf-access-authenticated-user-email": "tester@example.com" }
+        headers: { "x-test-user-email": "admin@example.test" }
       }),
-      workerEnv({ APP_ENV: "test", FORTNOX_CLIENT_ID: "", FORTNOX_CLIENT_SECRET: "" } as any),
+      workerEnv({ APP_ENV: "local", FORTNOX_CLIENT_ID: "", FORTNOX_CLIENT_SECRET: "" } as any),
       createExecutionContext()
     );
 

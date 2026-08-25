@@ -31,6 +31,11 @@ export function workerEnv(overrides: TestEnvOverrides = {}): Env {
     EMAIL_FROM: "offers@example.test",
     EMAIL_FROM_NAME: "Webblyftet",
     EMAIL_REPLY_TO: "ekonomi@example.test",
+    LOCAL_DEV_EMAIL: "admin@example.test",
+    ADMIN_EMAILS: "admin@example.test",
+    FINANCE_EMAILS: "finance@example.test",
+    SELLER_EMAILS: "seller@example.test",
+    READ_ONLY_EMAILS: "reader@example.test",
     ...overrides
   } as Env;
 }
@@ -76,6 +81,30 @@ export async function resetTables(db = env.DB): Promise<void> {
       error_message TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
+    `CREATE TABLE IF NOT EXISTS operational_events (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      message TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL,
+      customer_id TEXT,
+      contract_flow_id TEXT,
+      sales_order_id TEXT,
+      invoice_id TEXT,
+      subscription_id TEXT,
+      provider TEXT,
+      provider_event_id TEXT,
+      request_id TEXT,
+      details_json TEXT,
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      resolved_at TEXT
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_operational_events_open_dedupe
+      ON operational_events(dedupe_key)
+      WHERE resolved_at IS NULL`,
     `CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY,
       fortnox_customer_number TEXT UNIQUE,
@@ -512,6 +541,7 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("UPDATE document_sequences SET next_number=1, updated_at=CURRENT_TIMESTAMP WHERE name='TEST_INVOICE'").run();
   await db.prepare("DELETE FROM audit_log").run();
   await db.prepare("DELETE FROM integration_events").run();
+  await db.prepare("DELETE FROM operational_events").run();
   await db.prepare("DELETE FROM outbound_email_events").run();
   await db.prepare("DELETE FROM accounting_events").run();
   await db.prepare("DELETE FROM payment_methods").run();

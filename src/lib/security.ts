@@ -4,6 +4,7 @@ import {
   cloudflareAccessRequired,
   cloudflareAccessTeamDomain
 } from "./config";
+import { currentUserFromRequest } from "./authorization";
 
 const STRIPE_WEBHOOK_PATH = "/webhooks/stripe";
 const CUSTOMER_ORDER_PREFIX = "/customer-order/";
@@ -31,6 +32,23 @@ type AccessPayload = {
   email?: string;
 };
 
+type PublicCustomerOrderRoute = {
+  method: "GET" | "POST";
+  segments: string[];
+};
+
+const PUBLIC_CUSTOMER_ORDER_ROUTES: PublicCustomerOrderRoute[] = [
+  { method: "GET", segments: ["customer-order", ":token"] },
+  { method: "GET", segments: ["customer-order", ":token", "session"] },
+  { method: "GET", segments: ["customer-order", ":token", "offer-document"] },
+  { method: "GET", segments: ["customer-order", ":token", "stripe-config"] },
+  { method: "POST", segments: ["customer-order", ":token", "review"] },
+  { method: "POST", segments: ["customer-order", ":token", "sign"] },
+  { method: "POST", segments: ["customer-order", ":token", "payment-method", "setup"] },
+  { method: "POST", segments: ["customer-order", ":token", "payment-method", "confirm"] },
+  { method: "POST", segments: ["customer-order", ":token", "activate"] }
+];
+
 export function isLocalEnvironment(env: Env): boolean {
   return env.APP_ENV === "local";
 }
@@ -39,19 +57,30 @@ export function isExactStripeWebhookPath(pathname: string): boolean {
   return pathname === STRIPE_WEBHOOK_PATH;
 }
 
-export function isPublicCustomerOrderPath(pathname: string): boolean {
-  return pathname.startsWith(CUSTOMER_ORDER_PREFIX) || pathname.startsWith(CUSTOMER_ORDER_ASSETS_PREFIX);
+export function isPublicCustomerOrderPath(method: string, pathname: string): boolean {
+  const normalizedMethod = method.toUpperCase();
+  if (normalizedMethod === "GET" && pathname.startsWith(CUSTOMER_ORDER_ASSETS_PREFIX)) return true;
+  const segments = pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  return PUBLIC_CUSTOMER_ORDER_ROUTES.some((route) => {
+    if (route.method !== normalizedMethod || route.segments.length !== segments.length) return false;
+    return route.segments.every((expected, index) => expected === ":token" ? isSafePublicTokenSegment(segments[index]) : expected === segments[index]);
+  });
+}
+
+export function isPublicRoute(method: string, pathname: string): boolean {
+  return (method.toUpperCase() === "POST" && isExactStripeWebhookPath(pathname)) || isPublicCustomerOrderPath(method, pathname);
 }
 
 export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const url = new URL(c.req.url);
-    if (isExactStripeWebhookPath(url.pathname) || isPublicCustomerOrderPath(url.pathname)) {
+    if (isPublicRoute(c.req.method, url.pathname)) {
       await next();
       return;
     }
 
     if (isLocalEnvironment(c.env) || !cloudflareAccessRequired(c.env)) {
+      (c as any).set("authenticatedUser", currentUserFromRequest(c.env, c.req.raw.headers, null));
       await next();
       return;
     }
@@ -72,6 +101,7 @@ export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> 
       return c.json({ error: result.error, code: result.code }, 403);
     }
 
+    (c as any).set("authenticatedUser", currentUserFromRequest(c.env, c.req.raw.headers, result.payload.email));
     await next();
   };
 }
@@ -293,4 +323,8 @@ function isRateLimitedPath(pathname: string): boolean {
 
 function rateLimitScope(pathname: string): string {
   return pathname.replace(/\/(cus|off|inv|sub|rcp|prod|price)_[^/]+/g, "/:id");
+}
+
+function isSafePublicTokenSegment(value: string | undefined): boolean {
+  return Boolean(value && /^[A-Za-z0-9_-]{16,160}$/.test(value));
 }

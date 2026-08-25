@@ -41,7 +41,12 @@
     "EMAIL_FROM": "offers@REPLACE_WITH_VERIFIED_DOMAIN",
     "EMAIL_FROM_NAME": "Webblyftet",
     "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
-    "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
+    "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print",
+    "LOCAL_DEV_EMAIL": "local-admin@webblyftet.test",
+    "ADMIN_EMAILS": "local-admin@webblyftet.test",
+    "FINANCE_EMAILS": "",
+    "SELLER_EMAILS": "",
+    "READ_ONLY_EMAILS": ""
   },
   "observability": {
     "enabled": true,
@@ -82,7 +87,12 @@
         "EMAIL_FROM": "onboarding@resend.dev",
         "EMAIL_FROM_NAME": "Webblyftet",
         "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
-        "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
+        "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print",
+        "LOCAL_DEV_EMAIL": "",
+        "ADMIN_EMAILS": "sandberg@creziainvest.se,wisen@creziainvest.se",
+        "FINANCE_EMAILS": "",
+        "SELLER_EMAILS": "",
+        "READ_ONLY_EMAILS": ""
       }
     },
     "production": {
@@ -118,7 +128,12 @@
         "EMAIL_FROM": "offers@REPLACE_WITH_VERIFIED_DOMAIN",
         "EMAIL_FROM_NAME": "Webblyftet",
         "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
-        "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print"
+        "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print",
+        "LOCAL_DEV_EMAIL": "",
+        "ADMIN_EMAILS": "REPLACE_WITH_ADMIN_EMAILS",
+        "FINANCE_EMAILS": "REPLACE_WITH_FINANCE_EMAILS",
+        "SELLER_EMAILS": "REPLACE_WITH_SELLER_EMAILS",
+        "READ_ONLY_EMAILS": "REPLACE_WITH_READ_ONLY_EMAILS"
       }
     }
   }

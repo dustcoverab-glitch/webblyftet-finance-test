@@ -74,6 +74,8 @@ import {
   securityHeaders
 } from "./lib/security";
 import { isStripeConfigured, isStripePublishableKeyConfigured, maxReceiptUploadBytes } from "./lib/config";
+import { requirePermission } from "./lib/authorization";
+import { operationalHealth } from "./lib/operations";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -96,7 +98,7 @@ app.post("/webhooks/stripe", async (c) => {
   return c.json(await processStripeEvent(c.env, event));
 });
 
-app.get("/api/dashboard", async (c) => {
+app.get("/api/dashboard", requirePermission("bookkeeping.read"), async (c) => {
   const [
     customers,
     offers,
@@ -243,7 +245,7 @@ app.get("/api/dashboard", async (c) => {
   });
 });
 
-app.get("/auth/fortnox/start", async (c) => c.redirect(await createAuthUrl(c.env)));
+app.get("/auth/fortnox/start", requirePermission("fortnox.sync"), async (c) => c.redirect(await createAuthUrl(c.env)));
 
 app.get("/auth/fortnox/callback", async (c) => {
   const code = c.req.query("code");
@@ -257,8 +259,8 @@ app.get("/auth/fortnox/callback", async (c) => {
   }
 });
 
-app.get("/api/integration/status", async (c) => c.json(await connectionStatus(c.env)));
-app.post("/api/integration/disconnect", async (c) => {
+app.get("/api/integration/status", requirePermission("bookkeeping.read"), async (c) => c.json(await connectionStatus(c.env)));
+app.post("/api/integration/disconnect", requirePermission("fortnox.disconnect"), async (c) => {
   await c.env.DB.prepare("DELETE FROM fortnox_connections").run();
   return c.json({ ok: true });
 });
@@ -275,21 +277,21 @@ const customerSchema = z.object({
   notes: z.string().optional().default("")
 });
 
-app.get("/api/customers", async (c) => c.json(await all(c.env.DB, "SELECT * FROM customers ORDER BY created_at DESC")));
+app.get("/api/customers", requirePermission("customers.read"), async (c) => c.json(await all(c.env.DB, "SELECT * FROM customers ORDER BY created_at DESC")));
 
-app.get("/api/customers/:id", async (c) => {
+app.get("/api/customers/:id", requirePermission("customers.read"), async (c) => {
   const detail = await getCustomerDetail(c.env, c.req.param("id"));
   if (!detail) return c.json({ error: "Customer not found" }, 404);
   return c.json(detail);
 });
 
-app.post("/api/customers", zValidator("json", customerSchema), async (c) => {
+app.post("/api/customers", requirePermission("customers.write"), zValidator("json", customerSchema), async (c) => {
   const data = c.req.valid("json");
   const result = await createOrReuseCustomer(c.env, data);
   return c.json(result.customer, result.created ? 201 : 200);
 });
 
-app.post("/api/customers/:id/sync", async (c) => {
+app.post("/api/customers/:id/sync", requirePermission("fortnox.sync"), async (c) => {
   const customer = await one<any>(c.env.DB, "SELECT * FROM customers WHERE id=?", c.req.param("id"));
   if (!customer) return c.json({ error: "Customer not found" }, 404);
   const result = await syncCustomerToFortnox(c.env, customer);
@@ -300,7 +302,7 @@ app.post("/api/customers/:id/sync", async (c) => {
   return c.json({ customer: await one(c.env.DB, "SELECT * FROM customers WHERE id=?", customer.id), fortnox: result.raw });
 });
 
-app.post("/api/customers/pull", async (c) => {
+app.post("/api/customers/pull", requirePermission("fortnox.sync"), async (c) => {
   const customers = await pullCustomersFromFortnox(c.env);
   for (const item of customers) {
     const existing = await one<{ id: string }>(c.env.DB, "SELECT id FROM customers WHERE fortnox_customer_number=?", item.providerCustomerNumber);
@@ -320,15 +322,15 @@ app.post("/api/customers/pull", async (c) => {
   return c.json({ imported: customers.length });
 });
 
-app.post("/api/customers/:id/stripe-customer", async (c) => {
+app.post("/api/customers/:id/stripe-customer", requirePermission("subscriptions.manage"), async (c) => {
   return c.json(await createOrReuseStripeCustomer(c.env, c.req.param("id")));
 });
 
-app.post("/api/customers/:id/payment-method/setup", async (c) => {
+app.post("/api/customers/:id/payment-method/setup", requirePermission("subscriptions.manage"), async (c) => {
   return c.json(await createPaymentMethodSetupIntent(c.env, c.req.param("id")));
 });
 
-app.get("/api/stripe/config", async (c) => {
+app.get("/api/stripe/config", requirePermission("bookkeeping.read"), async (c) => {
   const configured = isStripeConfigured(c.env) && isStripePublishableKeyConfigured(c.env);
   return c.json({
     configured,
@@ -425,7 +427,7 @@ const priceSchema = z.object({
   active: z.boolean().optional().default(true)
 });
 
-app.get("/api/products", async (c) => c.json(await all<any>(
+app.get("/api/products", requirePermission("offers.read"), async (c) => c.json(await all<any>(
   c.env.DB,
   `SELECT p.*, COALESCE(json_group_array(
       CASE WHEN pr.id IS NULL THEN NULL ELSE json_object(
@@ -440,17 +442,17 @@ app.get("/api/products", async (c) => c.json(await all<any>(
    ORDER BY p.created_at DESC`
 )));
 
-app.post("/api/products", zValidator("json", productSchema), async (c) => {
+app.post("/api/products", requirePermission("offers.write"), zValidator("json", productSchema), async (c) => {
   return c.json(await createProduct(c.env, c.req.valid("json")), 201);
 });
 
-app.post("/api/prices", zValidator("json", priceSchema), async (c) => {
+app.post("/api/prices", requirePermission("offers.write"), zValidator("json", priceSchema), async (c) => {
   return c.json(await createPrice(c.env, c.req.valid("json")), 201);
 });
 
-app.post("/api/products/seed-test", async (c) => c.json(await seedTestProducts(c.env)));
-app.post("/api/products/:id/sync-stripe", async (c) => c.json(await syncProductToStripe(c.env, c.req.param("id"))));
-app.post("/api/prices/:id/sync-stripe", async (c) => c.json(await syncPriceToStripe(c.env, c.req.param("id"))));
+app.post("/api/products/seed-test", requirePermission("offers.write"), async (c) => c.json(await seedTestProducts(c.env)));
+app.post("/api/products/:id/sync-stripe", requirePermission("subscriptions.manage"), async (c) => c.json(await syncProductToStripe(c.env, c.req.param("id"))));
+app.post("/api/prices/:id/sync-stripe", requirePermission("subscriptions.manage"), async (c) => c.json(await syncPriceToStripe(c.env, c.req.param("id"))));
 
 const subscriptionSchema = z.object({
   customer_id: z.string().min(1),
@@ -462,7 +464,7 @@ const subscriptionSchema = z.object({
   })).min(1)
 });
 
-app.get("/api/subscriptions", async (c) => c.json(await all<any>(
+app.get("/api/subscriptions", requirePermission("invoices.read"), async (c) => c.json(await all<any>(
   c.env.DB,
   `SELECT s.*, c.name customer_name,
      COALESCE(SUM(CASE
@@ -482,25 +484,25 @@ app.get("/api/subscriptions", async (c) => c.json(await all<any>(
    ORDER BY s.created_at DESC`
 )));
 
-app.get("/api/subscriptions/:id", async (c) => {
+app.get("/api/subscriptions/:id", requirePermission("invoices.read"), async (c) => {
   const detail = await getSubscriptionDetail(c.env, c.req.param("id"));
   if (!detail) return c.json({ error: "Subscription not found" }, 404);
   return c.json(detail);
 });
 
-app.post("/api/subscriptions", zValidator("json", subscriptionSchema), async (c) => {
+app.post("/api/subscriptions", requirePermission("subscriptions.manage"), zValidator("json", subscriptionSchema), async (c) => {
   return c.json(await createSubscription(c.env, c.req.valid("json")), 201);
 });
 
-app.post("/api/subscriptions/:id/activate", async (c) => {
+app.post("/api/subscriptions/:id/activate", requirePermission("subscriptions.manage"), async (c) => {
   return c.json(await activateStripeSubscription(c.env, c.req.param("id")));
 });
 
-app.post("/api/subscriptions/:id/cancel", async (c) => {
+app.post("/api/subscriptions/:id/cancel", requirePermission("subscriptions.manage"), async (c) => {
   return c.json(await cancelStripeSubscriptionAtPeriodEnd(c.env, c.req.param("id")));
 });
 
-app.post("/api/sales-orders/:id/customer-session", async (c) => {
+app.post("/api/sales-orders/:id/customer-session", requirePermission("contract_flow.write"), async (c) => {
   return c.json(await createCustomerOrderSession(c.env, c.req.param("id")));
 });
 
@@ -694,46 +696,46 @@ const sendOfferEmailSchema = z.object({
   recipient: z.string().email().optional()
 });
 
-app.get("/api/contract-flows", async (c) => c.json(await listContractFlows(c.env)));
+app.get("/api/contract-flows", requirePermission("offers.read"), async (c) => c.json(await listContractFlows(c.env)));
 
-app.post("/api/contract-flows", zValidator("json", contractFlowHandoffSchema), async (c) => {
+app.post("/api/contract-flows", requirePermission("contract_flow.write"), zValidator("json", contractFlowHandoffSchema), async (c) => {
   return c.json(await createContractFlowFromHandoff(c.env, c.req.valid("json")), 201);
 });
 
-app.post("/api/contract-flows/simulate", async (c) => {
+app.post("/api/contract-flows/simulate", requirePermission("contract_flow.write"), async (c) => {
   return c.json(await createContractFlowFromHandoff(c.env, simulatedContractFlowHandoff()), 201);
 });
 
-app.get("/api/contract-flows/:id", async (c) => {
+app.get("/api/contract-flows/:id", requirePermission("offers.read"), async (c) => {
   const flow = await getContractFlow(c.env, c.req.param("id"));
   if (!flow) return c.json({ error: "Contract flow not found" }, 404);
   return c.json(flow);
 });
 
-app.put("/api/contract-flows/:id/draft", zValidator("json", contractFlowDraftSchema), async (c) => {
+app.put("/api/contract-flows/:id/draft", requirePermission("contract_flow.write"), zValidator("json", contractFlowDraftSchema), async (c) => {
   return c.json(await updateContractFlowDraft(c.env, c.req.param("id"), c.req.valid("json")));
 });
 
-app.post("/api/contract-flows/:id/customer-link", async (c) => {
+app.post("/api/contract-flows/:id/customer-link", requirePermission("contract_flow.write"), async (c) => {
   return c.json(await createContractFlowCustomerLink(c.env, c.req.param("id")));
 });
 
-app.post("/api/contract-flows/:id/send-offer-email", zValidator("json", sendOfferEmailSchema), async (c) => {
+app.post("/api/contract-flows/:id/send-offer-email", requirePermission("contract_flow.write"), zValidator("json", sendOfferEmailSchema), async (c) => {
   return c.json(await sendContractFlowOfferEmail(c.env, c.req.param("id"), c.req.valid("json")));
 });
 
-app.get("/api/offers", async (c) => c.json(await all<any>(
+app.get("/api/offers", requirePermission("offers.read"), async (c) => c.json(await all<any>(
   c.env.DB,
   `SELECT o.*, c.name customer_name FROM offers o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC`
 )));
 
-app.get("/api/offers/:id", async (c) => {
+app.get("/api/offers/:id", requirePermission("offers.read"), async (c) => {
   const offer = await getOfferDetail(c.env, c.req.param("id"));
   if (!offer) return c.json({ error: "Offer not found" }, 404);
   return c.json(offer);
 });
 
-app.get("/api/offers/:id/document", async (c) => {
+app.get("/api/offers/:id/document", requirePermission("offers.read"), async (c) => {
   const input = await offerDocumentInput(c.env, c.req.param("id"));
   if (!input) return c.json({ error: "Offer not found" }, 404);
   if (c.req.query("format") === "email") {
@@ -742,11 +744,11 @@ app.get("/api/offers/:id/document", async (c) => {
   return c.html(renderOfferDocument(c.env, input));
 });
 
-app.post("/api/offers", zValidator("json", offerSchema), async (c) => {
+app.post("/api/offers", requirePermission("offers.write"), zValidator("json", offerSchema), async (c) => {
   return c.json(await createBusinessOffer(c.env, c.req.valid("json")), 201);
 });
 
-app.post("/api/offers/:id/sync", async (c) => {
+app.post("/api/offers/:id/sync", requirePermission("fortnox.sync"), async (c) => {
   const offer = await one<any>(c.env.DB, "SELECT * FROM offers WHERE id=?", c.req.param("id"));
   if (!offer) return c.json({ error: "Offer not found" }, 404);
   const customer = await one<any>(c.env.DB, "SELECT * FROM customers WHERE id=?", offer.customer_id);
@@ -761,7 +763,7 @@ app.post("/api/offers/:id/sync", async (c) => {
   return c.json({ fortnox: result.raw, offer: await one(c.env.DB, "SELECT * FROM offers WHERE id=?", offer.id) });
 });
 
-app.post("/api/offers/:id/sign-link", async (c) => {
+app.post("/api/offers/:id/sign-link", requirePermission("offers.write"), async (c) => {
   const offer = await one<any>(c.env.DB, "SELECT id FROM offers WHERE id=?", c.req.param("id"));
   if (!offer) return c.json({ error: "Offer not found" }, 404);
   return c.json(await createOfferAcceptanceToken(c.env, offer.id));
@@ -810,7 +812,7 @@ app.post("/sign/:token", async (c) => {
   return c.html("<h1>Offerten är accepterad</h1><p>Tack. Händelsen har sparats i audit trail.</p>");
 });
 
-app.post("/api/offers/:id/create-invoice", async (c) => {
+app.post("/api/offers/:id/create-invoice", requirePermission("invoices.write"), async (c) => {
   const invoice = await one<any>(
     c.env.DB,
     `SELECT i.* FROM invoices i
@@ -823,18 +825,18 @@ app.post("/api/offers/:id/create-invoice", async (c) => {
   return c.json({ invoice });
 });
 
-app.get("/api/invoices", async (c) => c.json(await all<any>(
+app.get("/api/invoices", requirePermission("invoices.read"), async (c) => c.json(await all<any>(
   c.env.DB,
   `SELECT i.*, c.name customer_name FROM invoices i JOIN customers c ON c.id=i.customer_id ORDER BY i.created_at DESC`
 )));
 
-app.get("/api/invoices/:id", async (c) => {
+app.get("/api/invoices/:id", requirePermission("invoices.read"), async (c) => {
   const detail = await getInvoiceDetail(c.env, c.req.param("id"));
   if (!detail) return c.json({ error: "Invoice not found" }, 404);
   return c.json(detail);
 });
 
-app.get("/api/invoices/:id/document", async (c) => {
+app.get("/api/invoices/:id/document", requirePermission("invoices.read"), async (c) => {
   const input = await invoiceDocumentInput(c.env, c.req.param("id"));
   if (!input) return c.json({ error: "Invoice not found" }, 404);
   if (c.req.query("format") === "email") {
@@ -843,7 +845,7 @@ app.get("/api/invoices/:id/document", async (c) => {
   return c.html(renderInvoiceDocument(c.env, input));
 });
 
-app.post("/api/invoices/pull", async (c) => {
+app.post("/api/invoices/pull", requirePermission("fortnox.sync"), async (c) => {
   const invoices = await pullInvoicesFromFortnox(c.env);
   for (const item of invoices) {
     const customer = await one<any>(c.env.DB, "SELECT id FROM customers WHERE fortnox_customer_number=?", item.CustomerNumber);
@@ -872,11 +874,11 @@ app.post("/api/invoices/pull", async (c) => {
   return c.json({ imported: invoices.length });
 });
 
-app.post("/api/invoices/:id/sync-fortnox", async (c) => {
+app.post("/api/invoices/:id/sync-fortnox", requirePermission("fortnox.sync"), async (c) => {
   return c.json(await syncInvoiceToFortnox(c.env, c.req.param("id")));
 });
 
-app.post("/api/receipts", async (c) => {
+app.post("/api/receipts", requirePermission("receipts.manage"), async (c) => {
   const form = await c.req.formData();
   const file = form.get("file");
   if (!(file instanceof File)) return c.json({ error: "file is required" }, 400);
@@ -902,9 +904,9 @@ app.post("/api/receipts", async (c) => {
   return c.json(await one(c.env.DB, "SELECT * FROM receipts WHERE id=?", receiptId), 201);
 });
 
-app.get("/api/receipts", async (c) => c.json(await all(c.env.DB, "SELECT * FROM receipts ORDER BY created_at DESC")));
+app.get("/api/receipts", requirePermission("receipts.manage"), async (c) => c.json(await all(c.env.DB, "SELECT * FROM receipts ORDER BY created_at DESC")));
 
-app.get("/api/receipts/:id/file", async (c) => {
+app.get("/api/receipts/:id/file", requirePermission("receipts.manage"), async (c) => {
   const receipt = await one<any>(c.env.DB, "SELECT * FROM receipts WHERE id=?", c.req.param("id"));
   if (!receipt) return c.json({ error: "Not found" }, 404);
   const object = await c.env.RECEIPTS.get(receipt.r2_key);
@@ -917,13 +919,13 @@ app.get("/api/receipts/:id/file", async (c) => {
   return new Response(object.body, { headers });
 });
 
-app.post("/api/receipts/:id/push-inbox", async (c) => {
+app.post("/api/receipts/:id/push-inbox", requirePermission("fortnox.sync"), async (c) => {
   return c.json(await pushReceiptToFortnoxInbox(c.env, c.req.param("id")));
 });
 
-app.get("/api/supplier-invoices", async (c) => c.json(await all(c.env.DB, "SELECT * FROM supplier_invoices ORDER BY created_at DESC")));
+app.get("/api/supplier-invoices", requirePermission("bookkeeping.read"), async (c) => c.json(await all(c.env.DB, "SELECT * FROM supplier_invoices ORDER BY created_at DESC")));
 
-app.post("/api/supplier-invoices/pull", async (c) => {
+app.post("/api/supplier-invoices/pull", requirePermission("fortnox.sync"), async (c) => {
   const rows = await pullSupplierInvoicesFromFortnox(c.env);
   for (const item of rows) {
     const existing = await one<any>(c.env.DB, "SELECT id FROM supplier_invoices WHERE fortnox_document_number=?", item.GivenNumber);
@@ -954,9 +956,9 @@ app.post("/api/supplier-invoices/pull", async (c) => {
   return c.json({ imported: rows.length });
 });
 
-app.get("/api/vouchers", async (c) => c.json(await all(c.env.DB, "SELECT * FROM vouchers ORDER BY transaction_date DESC, voucher_number DESC LIMIT 500")));
+app.get("/api/vouchers", requirePermission("bookkeeping.read"), async (c) => c.json(await all(c.env.DB, "SELECT * FROM vouchers ORDER BY transaction_date DESC, voucher_number DESC LIMIT 500")));
 
-app.post("/api/vouchers/pull", async (c) => {
+app.post("/api/vouchers/pull", requirePermission("fortnox.sync"), async (c) => {
   const year = c.req.query("year");
   const series = c.req.query("series") ?? "A";
   if (!year) return c.json({ error: "year query param required, e.g. ?year=1&series=A" }, 400);
@@ -974,7 +976,8 @@ app.post("/api/vouchers/pull", async (c) => {
   return c.json({ imported: rows.length });
 });
 
-app.get("/api/sync-log", async (c) => c.json(await all(c.env.DB, "SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 250")));
+app.get("/api/sync-log", requirePermission("bookkeeping.read"), async (c) => c.json(await all(c.env.DB, "SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 250")));
+app.get("/api/operational-health", requirePermission("bookkeeping.read"), async (c) => c.json(await operationalHealth(c.env)));
 
 app.notFound(async (c) => c.env.ASSETS.fetch(c.req.raw));
 

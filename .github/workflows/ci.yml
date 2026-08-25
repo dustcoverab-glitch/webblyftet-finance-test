@@ -1,0 +1,62 @@
+name: Finance Test CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_LOG_PATH: .wrangler/logs
+      FORTNOX_CLIENT_ID: test-placeholder
+      FORTNOX_CLIENT_SECRET: test-placeholder
+      TOKEN_ENCRYPTION_KEY_BASE64: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+      STRIPE_SECRET_KEY: test-placeholder
+      STRIPE_WEBHOOK_SECRET: test-placeholder
+      RESEND_API_KEY: test-placeholder
+      EMAIL_FROM: offers@example.test
+      EMAIL_FROM_NAME: Webblyftet
+      EMAIL_REPLY_TO: ekonomi@example.test
+      ADMIN_EMAILS: admin@example.test
+      FINANCE_EMAILS: finance@example.test
+      SELLER_EMAILS: seller@example.test
+      READ_ONLY_EMAILS: reader@example.test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Wrangler types
+        run: pnpm exec wrangler types
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Full testsuite
+        run: pnpm test
+
+      - name: Security, roles and observability tests
+        run: pnpm exec vitest run tests/security.test.ts tests/authorization.test.ts tests/observability.test.ts
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Wrangler dry-run
+        run: pnpm exec wrangler deploy --env test --dry-run
