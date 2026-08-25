@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { all, id, one } from "./lib/db";
@@ -398,6 +398,20 @@ app.post("/customer-order/:token/activate", async (c) => {
   return c.json(await activateCustomerOrder(c.env, c.req.param("token")));
 });
 
+async function serveCustomerOrderApp(c: Context<{ Bindings: Env }>) {
+  const url = new URL(c.req.url);
+  url.pathname = "/customer-order.html";
+  url.search = "";
+  const response = await c.env.ASSETS.fetch(new Request(url.toString(), { method: "GET" }));
+  const headers = new Headers(response.headers);
+  headers.set("content-type", headers.get("content-type") ?? "text/html; charset=UTF-8");
+  headers.set("cache-control", "public, max-age=0, must-revalidate");
+  return new Response(response.body, { status: response.status, headers });
+}
+
+app.get("/customer-order/:token", serveCustomerOrderApp);
+app.get("/customer-order/:token/*", serveCustomerOrderApp);
+
 const productSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().default(""),
@@ -501,6 +515,7 @@ const rowSchema = z.object({
   quantity: z.number().positive(),
   unit: z.string().optional().default("st"),
   unit_price: z.number().optional(),
+  unit_price_minor: z.number().int().optional(),
   discount_percent: z.number().min(0).max(100).default(0),
   vat_percent: z.number().default(25),
   article_number: z.string().optional().default(""),

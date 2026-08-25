@@ -138,7 +138,10 @@ describe("Customer order onboarding", () => {
       createExecutionContext()
     );
     expect(deepLinkResponse.status).toBe(200);
-    expect(await deepLinkResponse.text()).toContain('<div id="root"></div>');
+    const deepLinkHtml = await deepLinkResponse.text();
+    expect(deepLinkHtml).toContain('<div id="customer-order-root"></div>');
+    expect(deepLinkHtml).toContain("/customer-order-assets/");
+    expect(deepLinkHtml).not.toContain("/assets/");
 
     const documentResponse = await worker.fetch(
       new Request(`https://finance-test.example/customer-order/${token}/offer-document`),
@@ -157,7 +160,14 @@ describe("Customer order onboarding", () => {
     );
     expect(publicResponse.status).toBe(200);
 
-    for (const path of ["/customer-order-test", "/api/dashboard"]) {
+    const publicAssetResponse = await worker.fetch(
+      new Request("https://finance-test.example/customer-order-assets/customer-order-test.js"),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+      createExecutionContext()
+    );
+    expect(publicAssetResponse.status).not.toBe(403);
+
+    for (const path of ["/customer-order-test", "/api/dashboard", "/assets/internal-admin.js"]) {
       const protectedResponse = await worker.fetch(
         new Request(`https://finance-test.example${path}`),
         workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),

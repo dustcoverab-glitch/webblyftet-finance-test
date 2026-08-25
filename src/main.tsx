@@ -190,36 +190,44 @@ async function stripeJs(publishableKey: string) {
   return (window as any).Stripe(publishableKey);
 }
 
-const nav = [
-  ["/", "Översikt", Gauge],
-  ["/customers", "Kunder", Users],
-  ["/contract-flow/new", "Avtalskedja", BadgeCheck],
-  ["/products", "Produkter & priser", Package],
-  ["/subscriptions", "Abonnemang", Repeat],
-  ["/offers", "Offerter", FileCheck2],
-  ["/invoices", "Fakturor", FileText],
-  ["/receipts", "Kvitton", ReceiptText],
-  ["/supplier-invoices", "Leverantörsfakturor", WalletCards],
-  ["/bookkeeping", "Bokföring", BookOpen],
-  ["/integration", "Fortnox", PlugZap],
-] as const;
+type NavItem = [string, string, React.ComponentType<{ size?: number }>];
+type NavGroup = { label: string; items: NavItem[] };
+
+const navGroups: NavGroup[] = [
+  { label: "Översikt", items: [["/", "Översikt", Gauge]] },
+  { label: "Försäljning", items: [["/contract-flow/new", "Avtalskedja", BadgeCheck], ["/customers", "Kunder", Users], ["/offers", "Offerter", FileCheck2]] },
+  { label: "Ekonomi", items: [["/invoices", "Fakturor", FileText], ["/subscriptions", "Abonnemang", Repeat], ["/products", "Produkter & priser", Package]] },
+  { label: "Bokföring", items: [["/receipts", "Kvitton", ReceiptText], ["/supplier-invoices", "Leverantörsfakturor", WalletCards], ["/bookkeeping", "Bokföring", BookOpen]] },
+  { label: "Integrationer", items: [["/integration", "Fortnox", PlugZap]] }
+];
 
 function Layout({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const current = navGroups.flatMap((group) => group.items).find(([to]) => to === "/" ? location.pathname === "/" : location.pathname.startsWith(to));
   return <div className="shell">
     <aside>
-      <div className="brand"><div className="brandMark">W</div><div><strong>Webblyftet</strong><span>Finance Test</span></div></div>
+      <div className="brand"><div className="brandMark">W</div><div><strong>Webblyftet</strong><span>Finance</span></div></div>
       <div className="testBadge">TESTMILJÖ</div>
-      <nav>{nav.map(([to, label, Icon]) =>
-        <NavLink key={to} to={to} end={to === "/"}><Icon size={18}/><span>{label}</span></NavLink>
-      )}</nav>
-      <div className="asideFoot">Finance Core + integrations<br/><small>Cloudflare Worker + D1 + R2</small></div>
+      <nav className="sideNav">{navGroups.map((group) => <div className="navGroup" key={group.label}>
+        <span className="navGroupLabel">{group.label}</span>
+        {group.items.map(([to, label, Icon]) =>
+          <NavLink key={to} to={to} end={to === "/"}><Icon size={17}/><span>{label}</span></NavLink>
+        )}
+      </div>)}</nav>
+      <div className="asideFoot"><strong>Finance Core</strong><small>Cloudflare Worker · D1 · R2</small></div>
     </aside>
-    <main>{children}</main>
+    <main>
+      <div className="topbar">
+        <div className="breadcrumb"><span>Finance</span><span>/</span><strong>{current?.[1] ?? "Arbetsyta"}</strong></div>
+        <div className="topbarMeta"><span>Testmiljö</span><span>{new Date().toLocaleDateString("sv-SE", { weekday: "long", day: "numeric", month: "long" })}</span></div>
+      </div>
+      <div className="pageCanvas">{children}</div>
+    </main>
   </div>;
 }
 
-function PageHead({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) {
-  return <div className="pageHead"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{action}</div>;
+function PageHead({ title, subtitle, action, eyebrow }: { title: string; subtitle?: string; action?: React.ReactNode; eyebrow?: string }) {
+  return <div className="pageHead"><div>{eyebrow && <div className="pageEyebrow">{eyebrow}</div>}<h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{action && <div className="pageActions">{action}</div>}</div>;
 }
 function Card({ children, className="" }: { children: React.ReactNode; className?: string }) {
   return <div className={`card ${className}`}>{children}</div>;
@@ -419,8 +427,18 @@ function Dashboard() {
     })),
     ...groupSyncAttention(data.attention?.sync ?? [])
   ].slice(0, 8);
+  const recentActivity = <Card><div className="panelHead"><div><h3>Senaste aktivitet</h3><p>Business, audit och ekonomihändelser</p></div></div>
+    <div className="activityList">
+      {(data.audit ?? []).slice(0, 8).map((item:any) => {
+        const to = activityTarget(item);
+        const content = <><FileText size={15}/><div><strong>{item.action}</strong><small>{item.entity_type} · {item.entity_id}</small></div><span>{displayDate(item.created_at)}</span></>;
+        return to ? <Link key={item.id} to={to} className="activityRow">{content}</Link> : <div key={item.id} className="activityRow">{content}</div>;
+      })}
+      {!data.audit?.length && <EmptyState title="Ingen aktivitet ännu" text="När offerter, order, fakturor eller betalningar skapas visas de här." />}
+    </div>
+  </Card>;
   return <>
-    <PageHead title="Finance Control Center" subtitle="Operativ testöversikt för kundfordringar, fakturering och abonnemang."
+    <PageHead title="Översikt" eyebrow="Finance Control Center" subtitle="Operativ testöversikt för kundfordringar, fakturering och abonnemang."
       action={<div className="quickActions"><Link to="/customers" className="button ghost small"><Users size={14}/>Ny kund</Link><Link to="/offers" className="button ghost small"><FileCheck2 size={14}/>Ny offert</Link><Link to="/invoices" className="button ghost small">Fakturor</Link><Link to="/subscriptions" className="button ghost small">Abonnemang</Link></div>} />
     <div className="integrationStrip compact">
       <div><span>Stripe</span><Status value={data.stripe?.configured ? "CONNECTED" : "NOT CONFIGURED"}/></div>
@@ -428,12 +446,6 @@ function Dashboard() {
       <div><span>Senaste sync</span><strong>{displayDateTime(data.logs?.[0]?.created_at)}</strong></div>
       <div><span>D1/R2</span><Status value="OK"/></div>
     </div>
-    <Card className="attentionCard">
-      <div className="panelHead"><div><h3>Kräver uppmärksamhet</h3><p>Prioriterade avvikelser i testmiljön</p></div>{attention.length ? <CircleAlert size={18}/> : <CheckCircle2 size={18}/>}</div>
-      {attention.length ? <div className="attentionList">{attention.map((item:any) =>
-        <Link key={item.id} to={item.to} className="attentionRow"><div><strong>{item.title}</strong><small>{item.meta}</small></div><Status value={item.status}/></Link>
-      )}</div> : <div className="goodState"><CheckCircle2 size={18}/><span>Inga akuta avvikelser i testmiljön</span></div>}
-    </Card>
     <div className="metricGrid">
       <Metric label="Fakturerat projektvärde" value={money(data.projectInvoices?.value)} hint={`${data.projectInvoices?.count ?? 0} projektfakturor`} to="/invoices?filter=project" />
       <Metric label="Utestående kundfordringar" value={moneyMinor(data.receivables?.outstanding_minor)} hint={`${data.receivables?.unpaid_count ?? 0} obetalda`} to="/invoices?filter=outstanding" />
@@ -441,6 +453,15 @@ function Dashboard() {
       <Metric label="Aktiva abonnemang" value={active} hint={`${pending} pending · ${pastDue} past due`} to="/subscriptions" />
       <Metric label="Obetalda/förfallna" value={data.receivables?.overdue_count ?? 0} hint={`${failedOrPastDue} failed/past due payments`} to="/invoices?filter=overdue" />
       <Metric label="Accepterad pipeline" value={money(data.offers?.accepted_value)} hint={`${data.offers?.count ?? 0} offerter totalt`} to="/offers" />
+    </div>
+    <div className="dashboardFocusGrid">
+      <Card className="attentionCard">
+        <div className="panelHead"><div><h3>Kräver uppmärksamhet</h3><p>Prioriterade avvikelser i testmiljön</p></div>{attention.length ? <CircleAlert size={18}/> : <CheckCircle2 size={18}/>}</div>
+        {attention.length ? <div className="attentionList">{attention.map((item:any) =>
+          <Link key={item.id} to={item.to} className="attentionRow"><div><strong>{item.title}</strong><small>{item.meta}</small></div><Status value={item.status}/></Link>
+        )}</div> : <div className="goodState"><CheckCircle2 size={18}/><span>Inga akuta avvikelser i testmiljön</span></div>}
+      </Card>
+      {recentActivity}
     </div>
     <div className="controlGrid">
       <Card><MiniTrend invoices={data.trend?.invoices} payments={data.trend?.payments}/></Card>
@@ -465,16 +486,6 @@ function Dashboard() {
           <div><span>MRR</span><strong>{moneyMinor(data.subscriptions?.mrr_minor)}</strong></div>
         </div>
         <p className="muted">{canceling} avslutas vid periodslut · fördelning viktad på {subscriptionTotal} subscriptions.</p>
-      </Card>
-      <Card><div className="panelHead"><div><h3>Senaste aktivitet</h3><p>Business, audit och ekonomihändelser</p></div></div>
-        <div className="activityList">
-          {(data.audit ?? []).slice(0, 8).map((item:any) => {
-            const to = activityTarget(item);
-            const content = <><FileText size={15}/><div><strong>{item.action}</strong><small>{item.entity_type} · {item.entity_id}</small></div><span>{displayDate(item.created_at)}</span></>;
-            return to ? <Link key={item.id} to={to} className="activityRow">{content}</Link> : <div key={item.id} className="activityRow">{content}</div>;
-          })}
-          {!data.audit?.length && <EmptyState title="Ingen aktivitet ännu" text="När offerter, order, fakturor eller betalningar skapas visas de här." />}
-        </div>
       </Card>
       <Card><div className="panelHead"><div><h3>Ekonomiska events</h3><p>Senaste accounting-ready händelserna</p></div><BookOpen size={18}/></div>
         <div className="activityList">
@@ -726,7 +737,7 @@ function OfferDetail() {
   if (!offer) return <div>Hämtar…</div>;
   const detailRows = offer.rows.map((row: any) => ({
     ...row,
-    unit_price_minor: parseMoneyInputToMinor(row.unit_price),
+    unit_price_minor: Number(row.unit_price_minor ?? parseMoneyInputToMinor(row.unit_price)),
     quantity: String(row.quantity),
     discount_percent: String(row.discount_percent ?? 0),
     vat_percent: String(row.vat_percent ?? 25),
@@ -806,7 +817,7 @@ function flowItemToEditorRow(item: any): OfferEditorRow {
     product_id: item.product_id || "",
     description: item.description || "",
     quantity: String(item.quantity ?? 1),
-    unit_price_minor: item.unit_price ? parseMoneyInputToMinor(item.unit_price) : 0,
+    unit_price_minor: Number(item.unit_price_minor ?? (item.unit_price ? parseMoneyInputToMinor(item.unit_price) : 0)),
     discount_percent: String(item.discount_percent ?? 0),
     vat_percent: String(item.vat_percent ?? 25),
     billing_type: "ONE_TIME",
@@ -816,10 +827,11 @@ function flowItemToEditorRow(item: any): OfferEditorRow {
 
 function hydrateFlowRows(editorRows: OfferEditorRow[], options: ReturnType<typeof productPriceOptions>) {
   return editorRows.map((row) => {
-    if (!row.price_id || (row.product_id && row.unit_price_minor > 0 && row.billing_type)) return row;
+    if (!row.price_id) return row;
     const option = options.find((item) => item.price.id === row.price_id);
     return option ? {
       ...row,
+      description: row.description || option.product.name,
       product_id: option.product.id,
       unit_price_minor: Number(option.price.amount ?? 0),
       billing_type: option.price.billing_type,
@@ -836,6 +848,7 @@ function editorRowsToPayload(rows: OfferEditorRow[]) {
     description: row.description,
     quantity: Number(row.quantity || 0),
     unit: "st",
+    unit_price_minor: row.unit_price_minor,
     unit_price: row.price_id ? undefined : Number(minorToInput(row.unit_price_minor)),
     discount_percent: Number(row.discount_percent || 0),
     vat_percent: Number(row.vat_percent || 0),

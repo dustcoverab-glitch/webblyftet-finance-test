@@ -108,7 +108,14 @@ describe("API health and Access middleware", () => {
     );
     expect(tokenRoute.status).toBe(404);
 
-    for (const path of ["/customer-order-test", "/customer-orders/not-a-real-token/session"]) {
+    const publicCustomerAsset = await worker.fetch(
+      new Request("https://finance-test.example/customer-order-assets/customer-order-test.js"),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+      createExecutionContext()
+    );
+    expect(publicCustomerAsset.status).not.toBe(403);
+
+    for (const path of ["/customer-order-test", "/customer-orders/not-a-real-token/session", "/assets/internal-admin.js", "/api/dashboard"]) {
       const response = await worker.fetch(
         new Request(`https://finance-test.example${path}`),
         workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),

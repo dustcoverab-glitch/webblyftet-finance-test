@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:worker": "wrangler dev",
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.customer-order.config.ts",
     "deploy": "npm run build && wrangler deploy --env test",
     "deploy:production": "npm run build && wrangler deploy --env production",
     "typecheck": "tsc --noEmit",

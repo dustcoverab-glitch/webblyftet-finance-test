@@ -12,6 +12,7 @@ export type OfferInputRow = {
   quantity: number;
   unit?: string | null;
   unit_price?: number | null;
+  unit_price_minor?: number | null;
   discount_percent?: number;
   vat_percent?: number;
   account_number?: number | null;
@@ -180,7 +181,7 @@ export async function createOfferVersion(env: Env, offerId: string) {
     quantity: Number(row.quantity),
     unit: row.unit ?? null,
     unit_price: Number(row.unit_price),
-    unit_price_minor: moneyToMinor(Number(row.unit_price)),
+    unit_price_minor: row.unit_price_minor != null ? Number(row.unit_price_minor) : moneyToMinor(Number(row.unit_price)),
     discount_percent: Number(row.discount_percent ?? 0),
     vat_percent: Number(row.vat_percent ?? 25),
     account_number: row.account_number ?? null,

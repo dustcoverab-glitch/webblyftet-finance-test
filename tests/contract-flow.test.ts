@@ -85,7 +85,12 @@ describe("Contract flow handoff", () => {
     const session = await env.DB.prepare("SELECT signing_snapshot_json FROM customer_order_sessions WHERE id=?")
       .bind(linked!.customer_order_session_id)
       .first<{ signing_snapshot_json: string }>();
-    expect(JSON.parse(session!.signing_snapshot_json).rows).toHaveLength(2);
+    const snapshot = JSON.parse(session!.signing_snapshot_json);
+    expect(snapshot.rows).toHaveLength(2);
+    expect(snapshot.rows[0].unit_price_minor).toBe(799500);
+    expect(snapshot.rows[1].unit_price_minor).toBe(29500);
+    expect(snapshot.totals.one_time_total_minor).toBe(999375);
+    expect(snapshot.totals.recurring_monthly_total_minor).toBe(36875);
   });
 
   it("reuses the existing customer-order session when customer link creation is retried", async () => {

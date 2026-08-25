@@ -7,6 +7,7 @@ import {
 
 const STRIPE_WEBHOOK_PATH = "/webhooks/stripe";
 const CUSTOMER_ORDER_PREFIX = "/customer-order/";
+const CUSTOMER_ORDER_ASSETS_PREFIX = "/customer-order-assets/";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|client_secret|secret|password|api[_-]?key|cookie|set-cookie|stripe[_-]?.*secret/i;
 const SENSITIVE_TEXT_PATTERNS = [
@@ -39,7 +40,7 @@ export function isExactStripeWebhookPath(pathname: string): boolean {
 }
 
 export function isPublicCustomerOrderPath(pathname: string): boolean {
-  return pathname.startsWith(CUSTOMER_ORDER_PREFIX);
+  return pathname.startsWith(CUSTOMER_ORDER_PREFIX) || pathname.startsWith(CUSTOMER_ORDER_ASSETS_PREFIX);
 }
 
 export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> {
