@@ -13,6 +13,7 @@ import {
   type CustomerOrderLoadStatus
 } from "./customer-order/view-model";
 import { copyFeedbackText, copyTextToClipboard, type CopyState } from "./lib/clipboard";
+import "@fontsource-variable/instrument-sans";
 import "./styles.css";
 
 type Customer = {
