@@ -6,6 +6,12 @@ import {
   Package, Plus, ReceiptText, RefreshCw, Repeat, Search, Trash2, Users, WalletCards
 } from "lucide-react";
 import { api, post } from "./api";
+import {
+  classifyCustomerOrderLoadError,
+  customerOrderRenderFallbackCopy,
+  normalizeCustomerOrderView,
+  type CustomerOrderLoadStatus
+} from "./customer-order/view-model";
 import { copyFeedbackText, copyTextToClipboard, type CopyState } from "./lib/clipboard";
 import "./styles.css";
 
@@ -1487,41 +1493,93 @@ function PaymentMethodPage() {
   </>;
 }
 
-function orderRows(rows: any[], type: "ONE_TIME" | "RECURRING") {
-  return rows.filter((row) => row.billing_type === type);
-}
-
 function CustomerOrderRows({ rows }: { rows: any[] }) {
   if (!rows.length) return <p className="muted">Inga rader i detta steg.</p>;
-  return <div className="customerOrderRows">{rows.map((row) => {
+  return <div className="customerOrderRows">{rows.map((row, index) => {
     const net = Math.round(Number(row.unit_price_minor ?? 0) * Number(row.quantity ?? 0));
     const vat = Math.round(net * Number(row.vat_percent ?? 0) / 100);
-    return <div className="customerOrderLine" key={row.id}>
-      <div><strong>{row.description}</strong><small>{row.billing_type}{row.billing_interval ? ` · ${row.billing_interval}` : ""}</small></div>
-      <span>{row.quantity} {row.unit || "st"}</span>
+    return <div className="customerOrderLine" key={row.id || `${row.description || "row"}-${index}`}>
+      <div><strong>{row.description || "Orderrad"}</strong><small>{row.billing_type || "ONE_TIME"}{row.billing_interval ? ` · ${row.billing_interval}` : ""}</small></div>
+      <span>{row.quantity ?? 0} {row.unit || "st"}</span>
       <span>{moneyMinor(row.unit_price_minor)}</span>
-      <span>{row.vat_percent}% moms</span>
+      <span>{row.vat_percent ?? 0}% moms</span>
       <strong>{moneyMinor(net + vat)}</strong>
     </div>;
   })}</div>;
+}
+
+function CustomerOrderStatusShell({ title, text }: { title: string; text?: string }) {
+  return <div className="customerOrderShell">
+    <div className="customerOrderBrand"><div className="brandMark">W</div><strong>Webblyftet</strong></div>
+    <Card><EmptyState title={title} text={text}/></Card>
+  </div>;
+}
+
+class CustomerOrderErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: React.ErrorInfo) {
+    console.error("customer_order_render_error", {
+      message: error instanceof Error ? error.message : "Unknown render error",
+      component_stack: info.componentStack?.slice(0, 2000)
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      const copy = customerOrderRenderFallbackCopy();
+      return <CustomerOrderStatusShell title={copy.title} text={copy.text}/>;
+    }
+    return this.props.children;
+  }
 }
 
 function CustomerOrderPage() {
   const { token } = useParams();
   const [session, setSession] = useState<CustomerOrderSession | null>(null);
   const [message, setMessage] = useState("");
+  const [loadStatus, setLoadStatus] = useState<CustomerOrderLoadStatus>("loading");
   const [busy, setBusy] = useState(false);
   const [cardMounted, setCardMounted] = useState(false);
   const [stripeState, setStripeState] = useState<{ stripe?: any; card?: any; clientSecret?: string | null }>({});
-  const load = () => api<CustomerOrderSession>(`/customer-order/${token}/session`).then(setSession);
-  useEffect(() => { load().catch((error)=>setMessage(error.message)); }, [token]);
+  const load = async () => {
+    if (!token) {
+      setLoadStatus("invalid");
+      setMessage("Kundlänken är ogiltig. Kontrollera länken eller kontakta Webblyftet.");
+      return;
+    }
+    try {
+      setLoadStatus("loading");
+      const nextSession = await api<CustomerOrderSession>(`/customer-order/${token}/session`);
+      setSession(nextSession);
+      setMessage("");
+      setLoadStatus("loaded");
+    } catch (error) {
+      const classified = classifyCustomerOrderLoadError(error);
+      setSession(null);
+      setMessage(classified.message);
+      setLoadStatus(classified.status);
+    }
+  };
+  useEffect(() => { load(); }, [token]);
   useEffect(() => () => { stripeState.card?.unmount?.(); }, [stripeState.card]);
-  if (!session) return <div className="customerOrderShell"><div className="customerOrderBrand"><div className="brandMark">W</div><strong>Webblyftet</strong></div><Card><EmptyState title="Hämtar order" text={message || "Kontrollerar din säkra orderlänk."}/></Card></div>;
+  if (!session) {
+    const title = loadStatus === "invalid"
+      ? "Kundlänken är ogiltig"
+      : loadStatus === "expired"
+        ? "Kundlänken har gått ut"
+        : loadStatus === "server_error"
+          ? "Ordern kunde inte laddas"
+          : "Hämtar order";
+    return <CustomerOrderStatusShell title={title} text={message || "Kontrollerar din säkra orderlänk."}/>;
+  }
 
-  const snapshot = session.snapshot;
-  const oneTimeRows = orderRows(snapshot.rows ?? [], "ONE_TIME");
-  const recurringRows = orderRows(snapshot.rows ?? [], "RECURRING");
-  const step = session.completed_at ? 4 : session.requirements.activation_required && !session.requirements.payment_method_required ? 3 : session.requirements.payment_method_required ? 2 : session.signed_at ? 3 : session.reviewed_at ? 1 : 0;
+  const view = normalizeCustomerOrderView(session);
+  const { customer, offer, totals, oneTimeRows, recurringRows, requirements, invoices, subscriptions, paymentMethod, documentHash } = view;
   const steps = ["Granska", "Signera", "Betalmetod", "Aktivera", "Klart"];
   async function run<T,>(fn: () => Promise<T>) {
     setBusy(true); setMessage("");
@@ -1586,24 +1644,24 @@ function CustomerOrderPage() {
       <Status value={session.status}/>
     </header>
     <section className="customerOrderHero">
-      <div><small>Offert och beställningsunderlag till {snapshot.customer?.name}</small><h1>{snapshot.offer?.title || "Din Webblyftet-order"}</h1><p>Granska offert, villkor och orderrader. Därefter signerar du och registrerar testkort för abonnemangsposter.</p></div>
-      <div className="customerOrderHash"><span>Dokumenthash</span><code>{session.document_hash.slice(0, 20)}…</code><small>Signerad snapshot är låst.</small></div>
+      <div><small>Offert och beställningsunderlag till {customer.name || "kund"}</small><h1>{offer.title || "Din Webblyftet-order"}</h1><p>Granska offert, villkor och orderrader. Därefter signerar du och registrerar testkort för abonnemangsposter.</p></div>
+      <div className="customerOrderHash"><span>Dokumenthash</span><code>{documentHash ? `${documentHash.slice(0, 20)}...` : "Saknas"}</code><small>Signerad snapshot är låst.</small></div>
     </section>
-    <div className="customerSteps">{steps.map((label, index)=><div key={label} className={`customerStep ${index <= step ? "active" : ""}`}><span>{index + 1}</span><strong>{label}</strong></div>)}</div>
+    <div className="customerSteps">{steps.map((label, index)=><div key={label} className={`customerStep ${index <= view.currentStep ? "active" : ""}`}><span>{index + 1}</span><strong>{label}</strong></div>)}</div>
     {message && <ErrorNotice message={message}/>}
     <div className="customerOrderGrid">
       <Card className="customerOrderMain">
         <h2>Granska offert och order</h2>
         <div className="customerIdentityGrid">
-          <div><span>Kundföretag</span><strong>{snapshot.customer?.name || "—"}</strong><small>{snapshot.customer?.org_number || "Org.nr saknas"}</small></div>
-          <div><span>Kontakt</span><strong>{snapshot.customer?.contact_name || snapshot.customer?.name || "—"}</strong><small>{snapshot.customer?.email || "E-post saknas"}</small></div>
-          <div><span>Fakturaadress</span><strong>{snapshot.customer?.address1 || "Adress saknas"}</strong><small>{[snapshot.customer?.zip, snapshot.customer?.city].filter(Boolean).join(" ") || "Postort saknas"}</small></div>
-          <div><span>Villkor</span><strong>{snapshot.offer?.terms_version || "Demo-standardvillkor"}</strong><small>Finance Test · demo/test-signering</small></div>
+          <div><span>Kundföretag</span><strong>{customer.name || "—"}</strong><small>{customer.org_number || "Org.nr saknas"}</small></div>
+          <div><span>Kontakt</span><strong>{customer.contact_name || customer.name || "—"}</strong><small>{customer.email || "E-post saknas"}</small></div>
+          <div><span>Fakturaadress</span><strong>{customer.address1 || "Adress saknas"}</strong><small>{[customer.zip, customer.city].filter(Boolean).join(" ") || "Postort saknas"}</small></div>
+          <div><span>Villkor</span><strong>{offer.terms_version || "Demo-standardvillkor"}</strong><small>Finance Test · demo/test-signering</small></div>
         </div>
         <div className="customerTotals">
-          <div><span>Engångskostnad</span><strong>{moneyMinor(snapshot.totals?.one_time_total_minor)}</strong><small>Moms {moneyMinor(snapshot.totals?.one_time_vat_minor)}</small></div>
-          <div><span>Återkommande / mån</span><strong>{moneyMinor(snapshot.totals?.recurring_monthly_total_minor)}</strong><small>Moms {moneyMinor(snapshot.totals?.recurring_monthly_vat_minor)}</small></div>
-          <div><span>Årspris återkommande</span><strong>{moneyMinor(snapshot.totals?.recurring_year_total_minor)}</strong><small>Årlig motsvarighet</small></div>
+          <div><span>Engångskostnad</span><strong>{moneyMinor(totals.one_time_total_minor)}</strong><small>Moms {moneyMinor(totals.one_time_vat_minor)}</small></div>
+          <div><span>Återkommande / mån</span><strong>{moneyMinor(totals.recurring_monthly_total_minor)}</strong><small>Moms {moneyMinor(totals.recurring_monthly_vat_minor)}</small></div>
+          <div><span>Årspris återkommande</span><strong>{moneyMinor(totals.recurring_year_total_minor)}</strong><small>Årlig motsvarighet</small></div>
         </div>
         <h3>Engångsposter</h3><CustomerOrderRows rows={oneTimeRows}/>
         <h3>Abonnemangsposter</h3><CustomerOrderRows rows={recurringRows}/>
@@ -1619,7 +1677,7 @@ function CustomerOrderPage() {
           {session.signed_at ? <div className="goodState"><CheckCircle2 size={18}/><span>Signerad av {session.signer_name}</span></div> :
             <form className="paymentForm" onSubmit={sign}>
               <input name="signer_name" placeholder="Namn" required/>
-              <input name="signer_email" type="email" placeholder="E-post" defaultValue={snapshot.customer?.email || ""} required/>
+              <input name="signer_email" type="email" placeholder="E-post" defaultValue={customer.email || ""} required/>
               <label className="checkLine"><input type="checkbox" required/> Jag godkänner orderinnehållet ovan.</label>
               <button disabled={busy || !session.reviewed_at} type="submit">Signera order</button>
               {!session.reviewed_at && <small className="muted">Granska ordern först.</small>}
@@ -1627,7 +1685,7 @@ function CustomerOrderPage() {
         </Card>
         <Card>
           <h3>Betalmetod</h3>
-          {!session.requirements.payment_method_required ? <div className="goodState"><CheckCircle2 size={18}/><span>{session.payment_method ? `${session.payment_method.brand || "Kort"} •••• ${session.payment_method.last4}` : "Ingen betalmetod krävs"}</span></div> :
+          {!requirements.payment_method_required ? <div className="goodState"><CheckCircle2 size={18}/><span>{paymentMethod ? `${paymentMethod.brand || "Kort"} •••• ${paymentMethod.last4 || "----"}` : "Ingen betalmetod krävs"}</span></div> :
             <div className="paymentForm">
               {!cardMounted && <button disabled={busy || !session.signed_at} onClick={startPaymentMethodSetup}>Registrera testkort</button>}
               <form onSubmit={confirmPaymentMethod}><div id="customer-card-element" className="stripeCardMount"></div>{cardMounted && <button disabled={busy} type="submit">Spara betalmetod</button>}</form>
@@ -1636,10 +1694,10 @@ function CustomerOrderPage() {
         <Card>
           <h3>Aktivera</h3>
           {session.completed_at ? <div className="goodState"><CheckCircle2 size={18}/><span>Ordern är klar</span></div> :
-            <button disabled={busy || session.requirements.signing_required || session.requirements.payment_method_required} onClick={activate}>Aktivera order</button>}
+            <button disabled={busy || requirements.signing_required || requirements.payment_method_required} onClick={activate}>Aktivera order</button>}
           <div className="summaryList">
-            <div><span>Faktura</span>{session.invoices?.[0] ? <a href={`/api/invoices/${session.invoices[0].id}/document`} target="_blank" rel="noreferrer">{session.invoices[0].invoice_number || "Visa faktura"}</a> : <Status value="Ej skapad"/>}</div>
-            <div><span>Subscription</span><Status value={session.subscriptions?.[0]?.status || "Ej aktuellt"}/></div>
+            <div><span>Faktura</span>{invoices[0] ? <a href={`/api/invoices/${invoices[0].id}/document`} target="_blank" rel="noreferrer">{invoices[0].invoice_number || "Visa faktura"}</a> : <Status value="Ej skapad"/>}</div>
+            <div><span>Subscription</span><Status value={subscriptions[0]?.status || "Ej aktuellt"}/></div>
             <div><span>Länk giltig till</span><strong>{displayDate(session.expires_at)}</strong></div>
           </div>
         </Card>
@@ -1689,7 +1747,7 @@ function Integration(){
 function App(){
   const location = useLocation();
   if (location.pathname.startsWith("/customer-order/")) {
-    return <Routes><Route path="/customer-order/:token" element={<CustomerOrderPage/>}/></Routes>;
+    return <CustomerOrderErrorBoundary><Routes><Route path="/customer-order/:token" element={<CustomerOrderPage/>}/></Routes></CustomerOrderErrorBoundary>;
   }
   return <Layout><Routes>
     <Route path="/" element={<Dashboard/>}/><Route path="/customers" element={<Customers/>}/><Route path="/customers/:id" element={<CustomerDetail/>}/><Route path="/contract-flow/new" element={<ContractFlowNew/>}/><Route path="/contract-flow/:id" element={<ContractFlowWorkspace/>}/><Route path="/offers" element={<Offers/>}/>

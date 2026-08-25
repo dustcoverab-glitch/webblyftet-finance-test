@@ -132,6 +132,14 @@ describe("Customer order onboarding", () => {
     const order = await seedAcceptedOrder();
     const link = await createCustomerOrderSession(workerEnv(), order.id);
     const token = link.url.split("/customer-order/")[1];
+    const deepLinkResponse = await worker.fetch(
+      new Request(`https://finance-test.example/customer-order/${token}`),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+      createExecutionContext()
+    );
+    expect(deepLinkResponse.status).toBe(200);
+    expect(await deepLinkResponse.text()).toContain('<div id="root"></div>');
+
     const publicResponse = await worker.fetch(
       new Request(`https://finance-test.example/customer-order/${token}/session`),
       workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
