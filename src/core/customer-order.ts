@@ -8,6 +8,7 @@ import { isStripeConfigured, isStripePublishableKeyConfigured } from "../lib/con
 import { decryptString, encryptString, sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
 import { PublicAppError } from "../lib/app-error";
+import { WEBBLYFTET_TERMS_VERSION } from "../documents/terms";
 
 export type CustomerOrderSessionResult = {
   id: string;
@@ -91,7 +92,8 @@ async function buildSnapshot(env: Env, salesOrderId: string): Promise<SigningSna
     env.DB,
     `SELECT so.*, c.name customer_name, c.org_number customer_org_number, c.email customer_email,
       c.phone customer_phone, c.address1 customer_address1, c.zip customer_zip, c.city customer_city,
-      c.country customer_country, o.title offer_title, ov.version_number
+      c.country customer_country, o.title offer_title, o.offer_date, o.expire_date,
+      o.remarks offer_remarks, o.fortnox_document_number offer_fortnox_document_number, ov.version_number
      FROM sales_orders so
      JOIN customers c ON c.id=so.customer_id
      JOIN offers o ON o.id=so.offer_id
@@ -150,7 +152,11 @@ async function buildSnapshot(env: Env, salesOrderId: string): Promise<SigningSna
       title: order.offer_title,
       version_id: order.offer_version_id,
       version_number: order.version_number ?? null,
-      terms_version: "WEBBLYFTET-DEMO-TERMS-2026-08-24"
+      terms_version: WEBBLYFTET_TERMS_VERSION,
+      offer_date: order.offer_date ?? null,
+      expire_date: order.expire_date ?? null,
+      remarks: order.offer_remarks ?? null,
+      fortnox_document_number: order.offer_fortnox_document_number ?? null
     },
     rows: normalizedRows,
     totals: {

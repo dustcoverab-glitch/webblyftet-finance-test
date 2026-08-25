@@ -1651,7 +1651,7 @@ function CustomerOrderPage() {
     {message && <ErrorNotice message={message}/>}
     <div className="customerOrderGrid">
       <Card className="customerOrderMain">
-        <h2>Granska offert och order</h2>
+        <div className="panelHead"><div><h2>Granska offert och order</h2><p>Sammanfattning för signering. Den fullständiga offerten öppnas som printklart dokument.</p></div><a className="button ghost small" href={`/customer-order/${token}/offer-document`} target="_blank" rel="noreferrer">Visa fullständig offert</a></div>
         <div className="customerIdentityGrid">
           <div><span>Kundföretag</span><strong>{customer.name || "—"}</strong><small>{customer.org_number || "Org.nr saknas"}</small></div>
           <div><span>Kontakt</span><strong>{customer.contact_name || customer.name || "—"}</strong><small>{customer.email || "E-post saknas"}</small></div>

@@ -346,6 +346,11 @@ app.get("/customer-order/:token/session", async (c) => {
   return c.json(await getCustomerOrderSessionForToken(c.env, c.req.param("token")));
 });
 
+app.get("/customer-order/:token/offer-document", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.html(renderOfferDocument(c.env, await customerOrderOfferDocumentInput(c.env, c.req.param("token"))));
+});
+
 app.get("/customer-order/:token/stripe-config", async (c) => {
   c.header("Cache-Control", "private, no-store");
   await getCustomerOrderSessionForToken(c.env, c.req.param("token"));
@@ -599,6 +604,42 @@ async function invoiceDocumentInput(env: Env, invoiceId: string) {
     fortnox_document_number: invoice.fortnox_document_number ?? null,
     seller_name: "Webblyftet",
     company: webblyftetCompanyProfile(env)
+  };
+}
+
+async function customerOrderOfferDocumentInput(env: Env, token: string) {
+  const payload = await getCustomerOrderSessionForToken(env, token) as any;
+  const snapshot = payload.snapshot ?? {};
+  const offer = snapshot.offer ?? {};
+  const customer = snapshot.customer ?? {};
+  return {
+    document_number: offer.fortnox_document_number || offer.id || payload.id,
+    title: offer.title || "Offert",
+    document_date: offer.offer_date || snapshot.generated_at?.slice?.(0, 10) || new Date().toISOString().slice(0, 10),
+    valid_until: offer.expire_date || payload.expires_at?.slice?.(0, 10) || null,
+    currency: snapshot.order?.currency ?? "SEK",
+    customer: {
+      name: customer.name ?? null,
+      org_number: customer.org_number ?? null,
+      email: customer.email ?? null,
+      phone: customer.phone ?? null,
+      address1: customer.address1 ?? null,
+      zip: customer.zip ?? null,
+      city: customer.city ?? null,
+      country: customer.country ?? "Sverige",
+      contact_name: customer.contact_name ?? null
+    },
+    seller_name: "Webblyftet",
+    rows: documentRows(snapshot.rows ?? []),
+    remarks: offer.remarks ?? "",
+    version_number: offer.version_number ?? null,
+    company: webblyftetCompanyProfile(env),
+    signer: {
+      name: payload.signer_name ?? null,
+      email: payload.signer_email ?? null,
+      signed_at: payload.signed_at ?? null,
+      status: payload.signed_at ? "Signerad i Finance Test" : "Demo-signering"
+    }
   };
 }
 

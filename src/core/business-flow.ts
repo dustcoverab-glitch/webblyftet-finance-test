@@ -2,6 +2,7 @@ import { createAccountingEvent, subscriptionMonthlyAmount } from "./finance";
 import { PublicAppError } from "../lib/app-error";
 import { sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
+import { WEBBLYFTET_TERMS_VERSION } from "../documents/terms";
 
 export type OfferInputRow = {
   product_id?: string | null;
@@ -204,7 +205,7 @@ export async function createOfferVersion(env: Env, offerId: string) {
       expire_date: detail.expire_date,
       currency: detail.currency ?? "SEK",
       remarks: detail.remarks,
-      terms_version: "WEBBLYFTET-DEMO-TERMS-2026-08-24"
+      terms_version: WEBBLYFTET_TERMS_VERSION
     },
     rows: snapshotRows,
     totals

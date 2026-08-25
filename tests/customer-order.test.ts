@@ -140,6 +140,16 @@ describe("Customer order onboarding", () => {
     expect(deepLinkResponse.status).toBe(200);
     expect(await deepLinkResponse.text()).toContain('<div id="root"></div>');
 
+    const documentResponse = await worker.fetch(
+      new Request(`https://finance-test.example/customer-order/${token}/offer-document`),
+      workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),
+      createExecutionContext()
+    );
+    const documentHtml = await documentResponse.text();
+    expect(documentResponse.status).toBe(200);
+    expect(documentHtml).toContain("Sida 1 av 3");
+    expect(documentHtml).toContain("Omfattning och leverans");
+
     const publicResponse = await worker.fetch(
       new Request(`https://finance-test.example/customer-order/${token}/session`),
       workerEnv({ APP_ENV: "test", REQUIRE_CLOUDFLARE_ACCESS: "true" } as any),

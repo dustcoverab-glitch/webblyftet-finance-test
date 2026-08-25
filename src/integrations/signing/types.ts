@@ -25,6 +25,10 @@ export type SigningSnapshot = {
     version_id: string;
     version_number?: number | null;
     terms_version?: string | null;
+    offer_date?: string | null;
+    expire_date?: string | null;
+    remarks?: string | null;
+    fortnox_document_number?: string | null;
   };
   rows: Array<{
     id: string;
