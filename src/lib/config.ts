@@ -2,6 +2,7 @@ import { PublicAppError } from "./app-error";
 
 const MISSING_FORTNOX_MESSAGE = "Fortnox är inte konfigurerat ännu.";
 const MISSING_STRIPE_MESSAGE = "Stripe är inte konfigurerat ännu.";
+const MISSING_EMAIL_MESSAGE = "E-post är inte konfigurerat ännu.";
 
 type OptionalEnv = Env & Record<string, string | undefined>;
 
@@ -51,6 +52,33 @@ export function requireStripeConfigured(env: Env): void {
 
 export function requireStripeWebhookConfigured(env: Env): void {
   if (!isStripeWebhookConfigured(env)) throw new PublicAppError(503, MISSING_STRIPE_MESSAGE);
+}
+
+export function isEmailConfigured(env: Env): boolean {
+  return !isPlaceholder(value(env, "RESEND_API_KEY")) && !isPlaceholder(value(env, "EMAIL_FROM"));
+}
+
+export function requireEmailConfigured(env: Env): void {
+  if (!isEmailConfigured(env)) throw new PublicAppError(503, MISSING_EMAIL_MESSAGE);
+}
+
+export function resendApiKey(env: Env): string {
+  requireEmailConfigured(env);
+  return value(env, "RESEND_API_KEY");
+}
+
+export function emailFrom(env: Env): string {
+  requireEmailConfigured(env);
+  return value(env, "EMAIL_FROM");
+}
+
+export function emailFromName(env: Env): string {
+  return value(env, "EMAIL_FROM_NAME") || "Webblyftet";
+}
+
+export function emailReplyTo(env: Env): string | undefined {
+  const raw = value(env, "EMAIL_REPLY_TO");
+  return isPlaceholder(raw) ? undefined : raw || undefined;
 }
 
 export function stripeSecretKey(env: Env): string {

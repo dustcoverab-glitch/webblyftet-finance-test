@@ -5,7 +5,7 @@ import { stripeClient } from "../integrations/stripe/client";
 import { basicAcceptanceSigningProvider } from "../integrations/signing";
 import type { SigningSnapshot } from "../integrations/signing";
 import { isStripeConfigured, isStripePublishableKeyConfigured } from "../lib/config";
-import { sha256Hex } from "../lib/crypto";
+import { decryptString, encryptString, sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
 import { PublicAppError } from "../lib/app-error";
 
@@ -22,6 +22,7 @@ type CustomerOrderSession = {
   sales_order_id: string;
   customer_id: string;
   token_hash: string;
+  public_token_enc?: string | null;
   status: string;
   expires_at: string;
   opened_at?: string | null;
@@ -230,6 +231,7 @@ export async function createCustomerOrderSession(env: Env, salesOrderId: string)
   }
   const token = newToken();
   const tokenHash = await sha256Hex(token);
+  const tokenEnc = await encryptString(token, env.TOKEN_ENCRYPTION_KEY_BASE64);
   const sessionId = id("cord");
   const expiresAt = expiryIso();
   await env.DB.prepare(
@@ -238,9 +240,9 @@ export async function createCustomerOrderSession(env: Env, salesOrderId: string)
      WHERE sales_order_id=? AND status IN ('CREATED','REVIEWED')`
   ).bind(salesOrderId).run();
   await env.DB.prepare(
-    `INSERT INTO customer_order_sessions(id,sales_order_id,customer_id,token_hash,status,expires_at)
-     VALUES (?,?,?,?,?,?)`
-  ).bind(sessionId, salesOrderId, order.customer_id, tokenHash, "CREATED", expiresAt).run();
+    `INSERT INTO customer_order_sessions(id,sales_order_id,customer_id,token_hash,public_token_enc,status,expires_at)
+     VALUES (?,?,?,?,?,?,?)`
+  ).bind(sessionId, salesOrderId, order.customer_id, tokenHash, tokenEnc, "CREATED", expiresAt).run();
   const session = await one<CustomerOrderSession>(env.DB, "SELECT * FROM customer_order_sessions WHERE id=?", sessionId);
   if (session) await ensureSnapshot(env, session);
   await audit(env, "SYSTEM", null, "CUSTOMER_ORDER_LINK_CREATED", "sales_order", salesOrderId, null, { customer_order_session_id: sessionId });
@@ -251,6 +253,18 @@ export async function createCustomerOrderSession(env: Env, salesOrderId: string)
     status: "CREATED",
     reused: false
   };
+}
+
+export async function customerOrderSessionUrl(env: Env, sessionId: string): Promise<string> {
+  const session = await one<CustomerOrderSession>(env.DB, "SELECT * FROM customer_order_sessions WHERE id=?", sessionId);
+  if (!session || new Date(session.expires_at).getTime() <= Date.now()) {
+    throw new PublicAppError(404, "Kundlänken är ogiltig eller har gått ut.");
+  }
+  if (!session.public_token_enc) {
+    throw new PublicAppError(409, "Kundlänken saknar återöppningsbar token. Skapa en ny avtalsversion innan e-postutskick.");
+  }
+  const token = await decryptString(session.public_token_enc, env.TOKEN_ENCRYPTION_KEY_BASE64);
+  return `${env.APP_BASE_URL.replace(/\/+$/, "")}/customer-order/${token}`;
 }
 
 export async function getCustomerOrderSessionForToken(env: Env, token: string) {

@@ -880,6 +880,7 @@ function ContractFlowWorkspace() {
   const [customerLink, setCustomerLink] = useState("");
   const [copyState, setCopyState] = useState<CopyState>("IDLE");
   const [saving, setSaving] = useState(false);
+  const [sendingOffer, setSendingOffer] = useState(false);
   const [company, setCompany] = useState<any>({});
   const [contact, setContact] = useState<any>({});
   const [rows, setRows] = useState<OfferEditorRow[]>([]);
@@ -966,10 +967,24 @@ function ContractFlowWorkspace() {
     if (!customerLink) return;
     setCopyState(await copyTextToClipboard(customerLink));
   }
+  async function sendOfferEmail() {
+    setSendingOffer(true); setError("");
+    try {
+      const result:any = await post(`/api/contract-flows/${flow.id}/send-offer-email`, { recipient: contact.email || undefined });
+      setFlow(result.flow);
+      setCustomerLink(result.customer_order_url || customerLink);
+    } catch (err:any) {
+      setError(err.message);
+    } finally {
+      setSendingOffer(false);
+    }
+  }
+  const latestOfferEmail = (flow.email_events ?? []).find((event:any)=>event.email_type === "OFFER");
+  const latestSentOfferEmail = (flow.email_events ?? []).find((event:any)=>event.email_type === "OFFER" && event.status === "SENT");
   const steps = [
     ["Kunduppgifter", !missing.some((m:any)=>String(m.field).startsWith("company") || String(m.field).startsWith("contact"))],
     ["Offert skapad", Boolean(flow.sales_order_id)],
-    ["Offert skickad", Boolean(flow.customer_order_session_id)],
+    ["Offert skickad", Boolean(latestSentOfferEmail)],
     ["Kunden öppnade", Boolean(flow.customer_order_session?.opened_at)],
     ["Signerad", Boolean(flow.customer_order_session?.signed_at)],
     ["Betalmetod registrerad", Boolean(flow.customer_order_session?.payment_method_id) || !flow.subscriptions?.length],
@@ -1042,6 +1057,12 @@ function ContractFlowWorkspace() {
           </div>}
           {customerLink && <div className="copyNotice"><strong>Kundlänken är redo</strong><input readOnly value={customerLink} onFocus={(event)=>event.currentTarget.select()}/><div className="copyActions"><button className="ghost small" onClick={copyCustomerLink}>Kopiera länk</button><a className="button ghost small" href={customerLink} target="_blank" rel="noopener noreferrer">Öppna kundvy</a><button className="ghost small" disabled>Skicka via e-post</button></div>{copyState !== "IDLE" && <small>{copyFeedbackText(copyState)}</small>}</div>}
           {flow.customer_order_session && !customerLink && <div className="copyNotice"><strong>Kundsession finns</strong><small>Sessionen finns redan. Skapa ingen ny session om inte avtalsversionen ändras senare.</small></div>}
+          <div className="copyNotice">
+            <strong>{latestSentOfferEmail ? `Skickat till ${latestSentOfferEmail.recipient}` : latestOfferEmail?.status === "FAILED" ? "Offertmail misslyckades" : "Offertmail ej skickat"}</strong>
+            <small>{latestSentOfferEmail ? `Skickat ${latestSentOfferEmail.sent_at || latestSentOfferEmail.created_at}` : latestOfferEmail?.failure_message || "Skicka först när kundlänken och offertversionen är redo."}</small>
+            <div className="copyActions"><button className="small" onClick={sendOfferEmail} disabled={sendingOffer || !contact.email}>{sendingOffer ? "Skickar…" : latestSentOfferEmail ? "Skicka igen" : "Skicka offert till kund"}</button></div>
+            {latestSentOfferEmail?.provider_message_id && <small>Resend ID: {latestSentOfferEmail.provider_message_id}</small>}
+          </div>
         </Card>
         {flow.status === "COMPLETED" && <Card className="successPanel">
           <h3>Affären är klar</h3>

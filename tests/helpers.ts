@@ -27,6 +27,10 @@ export function workerEnv(overrides: TestEnvOverrides = {}): Env {
     CF_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
     CF_ACCESS_AUD: "test-aud",
     MAX_RECEIPT_UPLOAD_BYTES: "10485760",
+    RESEND_API_KEY: "test-resend-key",
+    EMAIL_FROM: "offers@example.test",
+    EMAIL_FROM_NAME: "Webblyftet",
+    EMAIL_REPLY_TO: "ekonomi@example.test",
     ...overrides
   } as Env;
 }
@@ -363,6 +367,7 @@ export async function resetTables(db = env.DB): Promise<void> {
       sales_order_id TEXT NOT NULL,
       customer_id TEXT NOT NULL,
       token_hash TEXT NOT NULL UNIQUE,
+      public_token_enc TEXT,
       status TEXT NOT NULL DEFAULT 'CREATED',
       expires_at TEXT NOT NULL,
       opened_at TEXT,
@@ -474,10 +479,32 @@ export async function resetTables(db = env.DB): Promise<void> {
       bucket_key TEXT PRIMARY KEY,
       count INTEGER NOT NULL,
       window_start INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS outbound_email_events (
+      id TEXT PRIMARY KEY,
+      recipient TEXT NOT NULL,
+      email_type TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_message_id TEXT,
+      contract_flow_id TEXT,
+      customer_order_session_id TEXT,
+      offer_id TEXT,
+      invoice_id TEXT,
+      status TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      failure_code TEXT,
+      failure_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      sent_at TEXT,
+      failed_at TEXT
     )`
   ];
   for (const statement of statements) {
     await db.prepare(statement).run();
+  }
+  const sessionColumns = await db.prepare("PRAGMA table_info(customer_order_sessions)").all<{ name: string }>();
+  if (!sessionColumns.results.some((column) => column.name === "public_token_enc")) {
+    await db.prepare("ALTER TABLE customer_order_sessions ADD COLUMN public_token_enc TEXT").run();
   }
   await db.prepare("DELETE FROM sync_log").run();
   await db.prepare("DELETE FROM fortnox_connections").run();
@@ -485,6 +512,7 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("UPDATE document_sequences SET next_number=1, updated_at=CURRENT_TIMESTAMP WHERE name='TEST_INVOICE'").run();
   await db.prepare("DELETE FROM audit_log").run();
   await db.prepare("DELETE FROM integration_events").run();
+  await db.prepare("DELETE FROM outbound_email_events").run();
   await db.prepare("DELETE FROM accounting_events").run();
   await db.prepare("DELETE FROM payment_methods").run();
   await db.prepare("DELETE FROM payment_method_setup_sessions").run();

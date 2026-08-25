@@ -16,7 +16,7 @@ type CustomerInfo = {
   contact_name?: string | null;
 };
 
-type OfferDocumentInput = {
+export type OfferDocumentInput = {
   document_number: string;
   title: string;
   document_date: string;
@@ -169,6 +169,58 @@ export function renderOfferEmailPreview(input: OfferDocumentInput): string {
   const currency = input.currency ?? "SEK";
   const totals = documentTotals(input.rows);
   return `Din offert fran Webblyftet\n\nHej ${input.customer.contact_name || input.customer.name || ""},\n\nTack for ett trevligt mote. Har ar en sammanfattning av losningen vi har gatt igenom.\n\nKundforetag: ${input.customer.name || "-"}\nOffert: ${input.document_number}\nGiltig till: ${input.valid_until || "-"}\nEngangskostnad: ${formatMinor(totals.oneTime.gross, currency)} inkl. moms\nAterkommande per manad: ${formatMinor(totals.recurringMonthly.gross, currency)} inkl. moms\nAterkommande arspris: ${formatMinor(totals.recurringAnnual.gross, currency)} inkl. moms\n\nCTA: Granska och godkann offerten\nSekundart: Visa offert / PDF nar PDF-generation ar aktiverad\n\nDetta ar ett Finance Test-demo-mail.`;
+}
+
+export function renderOfferEmail(input: OfferDocumentInput, customerOrderUrl: string): { subject: string; html: string; text: string } {
+  const company = input.company ?? webblyftetCompanyProfile({} as Env);
+  const currency = input.currency ?? "SEK";
+  const totals = documentTotals(input.rows);
+  const contact = input.customer.contact_name || input.customer.name || "";
+  const subject = `Din offert från ${company.brand_name}: ${input.title || input.document_number}`;
+  const rowSummary = input.rows.map((row) => `<tr>
+    <td style="padding:10px 0;border-bottom:1px solid #e7e5df"><strong>${escapeHtml(row.description)}</strong><br><span style="color:#66736d">${escapeHtml(row.billing_type === "RECURRING" ? "Återkommande" : "Engång")} · ${escapeHtml(String(row.quantity))} ${escapeHtml(row.unit || "st")}</span></td>
+    <td style="padding:10px 0;border-bottom:1px solid #e7e5df;text-align:right"><strong>${formatMinor(lineGrossMinor(row), currency)}</strong></td>
+  </tr>`).join("");
+  const html = `<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+  <body style="margin:0;background:#f4f3ef;color:#17221f;font-family:Inter,Arial,sans-serif">
+    <main style="max-width:720px;margin:0 auto;padding:28px 16px">
+      <section style="background:#fff;border:1px solid #deddd7;border-radius:12px;padding:28px">
+        <div style="font-size:24px;font-weight:900;margin-bottom:18px"><span style="display:inline-block;background:#d4f36b;border-radius:8px;padding:6px 10px;margin-right:8px">W</span>${escapeHtml(company.brand_name)}</div>
+        <p>Hej ${escapeHtml(contact)},</p>
+        <p>Tack för ett trevligt möte. Här är offerten för ${escapeHtml(input.customer.name || "ert företag")}.</p>
+        <table style="width:100%;border-collapse:collapse;margin:22px 0">
+          <tr><td style="color:#66736d">Offert</td><td style="text-align:right"><strong>${escapeHtml(input.document_number)}</strong></td></tr>
+          <tr><td style="color:#66736d">Offertdatum</td><td style="text-align:right">${escapeHtml(input.document_date)}</td></tr>
+          <tr><td style="color:#66736d">Giltig till</td><td style="text-align:right">${escapeHtml(input.valid_until || "-")}</td></tr>
+        </table>
+        <table style="width:100%;border-collapse:collapse">${rowSummary || `<tr><td>Inga rader.</td></tr>`}</table>
+        <section style="margin:22px 0;padding:16px;background:#f8f8f4;border-radius:10px">
+          <div>Engångskostnad inkl. moms: <strong>${formatMinor(totals.oneTime.gross, currency)}</strong></div>
+          <div>Återkommande per månad inkl. moms: <strong>${formatMinor(totals.recurringMonthly.gross, currency)}</strong></div>
+          <div>Återkommande årspris inkl. moms: <strong>${formatMinor(totals.recurringAnnual.gross, currency)}</strong></div>
+        </section>
+        <p><a href="${escapeHtml(customerOrderUrl)}" style="display:inline-block;background:#17221f;color:#fff;text-decoration:none;border-radius:8px;padding:12px 16px;font-weight:800">Granska och godkänn offerten</a></p>
+        <p style="color:#66736d;font-size:13px;line-height:1.5">Detta är ett testmail från Finance Test. Om knappen inte fungerar kan du kopiera länken: ${escapeHtml(customerOrderUrl)}</p>
+      </section>
+    </main>
+  </body></html>`;
+  const text = [
+    `Din offert från ${company.brand_name}`,
+    "",
+    `Hej ${contact},`,
+    "",
+    `Kundföretag: ${input.customer.name || "-"}`,
+    `Offert: ${input.document_number}`,
+    `Offertdatum: ${input.document_date}`,
+    `Giltig till: ${input.valid_until || "-"}`,
+    `Engångskostnad: ${formatMinor(totals.oneTime.gross, currency)} inkl. moms`,
+    `Återkommande per månad: ${formatMinor(totals.recurringMonthly.gross, currency)} inkl. moms`,
+    `Återkommande årspris: ${formatMinor(totals.recurringAnnual.gross, currency)} inkl. moms`,
+    "",
+    "Granska och godkänn offerten:",
+    customerOrderUrl
+  ].join("\n");
+  return { subject, html, text };
 }
 
 export function renderInvoiceEmailPreview(input: InvoiceDocumentInput): string {

@@ -202,13 +202,14 @@ export async function getContractFlow(env: Env, flowId: string) {
   if (!flow) return null;
   const draft = JSON.parse(flow.draft_json) as ContractFlowDraft;
   const handoff = JSON.parse(flow.handoff_json) as ContractFlowHandoff;
-  const [order, session, invoices, subscriptions, payments, events, auditRows] = await Promise.all([
+  const [order, session, invoices, subscriptions, payments, events, emailEvents, auditRows] = await Promise.all([
     flow.sales_order_id ? one<any>(env.DB, "SELECT * FROM sales_orders WHERE id=?", flow.sales_order_id) : null,
     flow.customer_order_session_id ? one<any>(env.DB, "SELECT * FROM customer_order_sessions WHERE id=?", flow.customer_order_session_id) : null,
     flow.sales_order_id ? env.DB.prepare("SELECT * FROM invoices WHERE sales_order_id=? ORDER BY created_at").bind(flow.sales_order_id).all<any>() : Promise.resolve({ results: [] }),
     flow.sales_order_id ? env.DB.prepare("SELECT * FROM subscriptions WHERE sales_order_id=? ORDER BY created_at").bind(flow.sales_order_id).all<any>() : Promise.resolve({ results: [] }),
     flow.sales_order_id ? env.DB.prepare("SELECT * FROM payments WHERE subscription_id IN (SELECT id FROM subscriptions WHERE sales_order_id=?) ORDER BY created_at DESC").bind(flow.sales_order_id).all<any>() : Promise.resolve({ results: [] }),
     flow.sales_order_id ? env.DB.prepare("SELECT * FROM accounting_events WHERE entity_id IN (SELECT id FROM payments WHERE subscription_id IN (SELECT id FROM subscriptions WHERE sales_order_id=?)) ORDER BY created_at DESC").bind(flow.sales_order_id).all<any>() : Promise.resolve({ results: [] }),
+    env.DB.prepare("SELECT * FROM outbound_email_events WHERE contract_flow_id=? ORDER BY created_at DESC LIMIT 20").bind(flowId).all<any>(),
     env.DB.prepare("SELECT * FROM audit_log WHERE entity_id=? OR metadata_json LIKE ? ORDER BY created_at DESC LIMIT 20").bind(flowId, `%${flowId}%`).all<any>()
   ]);
   const derivedStatus = flowStatusFromSession(session);
@@ -232,6 +233,7 @@ export async function getContractFlow(env: Env, flowId: string) {
     subscriptions: subscriptions.results,
     payments: payments.results,
     accounting_events: events.results,
+    email_events: emailEvents.results,
     audit: auditRows.results
   };
 }

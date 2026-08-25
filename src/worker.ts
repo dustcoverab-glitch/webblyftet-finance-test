@@ -54,6 +54,7 @@ import { syncOfferToFortnox } from "./integrations/fortnox/offers";
 import { pullInvoicesFromFortnox, syncInvoiceToFortnox } from "./integrations/fortnox/invoices";
 import { pullSupplierInvoicesFromFortnox, pullVouchersFromFortnox } from "./integrations/fortnox/accounting";
 import { pushReceiptToFortnoxInbox } from "./integrations/fortnox/receipts";
+import { sendContractFlowOfferEmail } from "./integrations/email/offers";
 import { createOrReuseStripeCustomer } from "./integrations/stripe/customers";
 import {
   activateStripeSubscription,
@@ -637,6 +638,10 @@ const contractFlowHandoffSchema = z.object({
   items: z.array(contractFlowItemSchema)
 });
 
+const sendOfferEmailSchema = z.object({
+  recipient: z.string().email().optional()
+});
+
 app.get("/api/contract-flows", async (c) => c.json(await listContractFlows(c.env)));
 
 app.post("/api/contract-flows", zValidator("json", contractFlowHandoffSchema), async (c) => {
@@ -659,6 +664,10 @@ app.put("/api/contract-flows/:id/draft", zValidator("json", contractFlowDraftSch
 
 app.post("/api/contract-flows/:id/customer-link", async (c) => {
   return c.json(await createContractFlowCustomerLink(c.env, c.req.param("id")));
+});
+
+app.post("/api/contract-flows/:id/send-offer-email", zValidator("json", sendOfferEmailSchema), async (c) => {
+  return c.json(await sendContractFlowOfferEmail(c.env, c.req.param("id"), c.req.valid("json")));
 });
 
 app.get("/api/offers", async (c) => c.json(await all<any>(

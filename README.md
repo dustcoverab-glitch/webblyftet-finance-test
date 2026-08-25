@@ -114,6 +114,7 @@ Required secrets deklareras i `wrangler.jsonc`:
 - `TOKEN_ENCRYPTION_KEY_BASE64`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
+- `RESEND_API_KEY`
 
 Sätt dem per miljö. Exempel för test:
 
@@ -123,9 +124,35 @@ npx wrangler secret put FORTNOX_CLIENT_SECRET --env test
 npx wrangler secret put TOKEN_ENCRYPTION_KEY_BASE64 --env test
 npx wrangler secret put STRIPE_SECRET_KEY --env test
 npx wrangler secret put STRIPE_WEBHOOK_SECRET --env test
+npx wrangler secret put RESEND_API_KEY --env test
 ```
 
 Inga secrets skickas till frontend. Browsern autentiseras inte med `x-admin-api-key`; deployad testmiljö ska skyddas med Cloudflare Access framför hela applikationen.
+
+## Resend
+
+Finance Test skickar offertmail via Resends HTTPS API. `SENT` betyder att Resend har accepterat meddelandet och returnerat ett provider message ID, inte att mottagaren har öppnat eller klickat mailet.
+
+Manuell setup innan live-deploy av mailflödet:
+
+1. Öppna Resend Dashboard.
+2. Skapa eller välj projekt/team för Webblyftet Finance Test.
+3. Gå till Domains och lägg till en testdomän eller subdomän som ni kontrollerar, till exempel `mail.webblyftet.se` eller annan dedikerad testdomän.
+4. Lägg in DNS-records som Resend visar för domänen. Vanligtvis SPF/TXT, DKIM/CNAME eller TXT, och eventuell MX/return-path beroende på Resends instruktioner för domänen.
+5. Vänta tills Resend visar domänen som verified.
+6. Gå till API Keys och skapa en key med behörighet för email-sending.
+7. Sätt `RESEND_API_KEY` som Worker secret för `env test`.
+8. Sätt `EMAIL_FROM` till en adress på verifierad domän, till exempel `offers@mail.webblyftet.se`.
+9. Sätt `EMAIL_FROM_NAME=Webblyftet`.
+10. Sätt `EMAIL_REPLY_TO` till önskad test-reply-adress, eller lämna den tom om reply-to inte ska sättas.
+
+Exempel:
+
+```bash
+npx wrangler secret put RESEND_API_KEY --env test
+```
+
+`EMAIL_FROM`, `EMAIL_FROM_NAME` och `EMAIL_REPLY_TO` ligger som vanliga environment variables i `wrangler.jsonc` eftersom de inte är hemligheter. API key får aldrig skrivas till Git, D1, frontend eller loggar.
 
 ## Cloudflare Access
 
