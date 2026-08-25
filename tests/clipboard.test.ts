@@ -15,6 +15,14 @@ describe("clipboard-safe link handling", () => {
     expect(mainSource).not.toContain("navigator.clipboard");
   });
 
+  it("keeps receipt upload form reset independent from React event lifetime", () => {
+    const uploadBody = mainSource.match(/async function upload\(e:React\.FormEvent<HTMLFormElement>\)\{[\s\S]*?\n  \}/)?.[0] ?? "";
+    expect(uploadBody).toContain("const form=e.currentTarget");
+    expect(uploadBody).toContain("form.reset()");
+    expect(uploadBody).toContain("await load()");
+    expect(uploadBody).not.toContain("e.currentTarget as HTMLFormElement).reset()");
+  });
+
   it("returns manual-copy state when Clipboard API is missing", async () => {
     await expect(copyTextToClipboard("https://example.test/link", undefined)).resolves.toBe("MANUAL");
   });

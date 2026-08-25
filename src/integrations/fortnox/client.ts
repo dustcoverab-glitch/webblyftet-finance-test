@@ -27,6 +27,10 @@ export const FORTNOX_INBOX_PATHS = {
 
 export type FortnoxInboxPath = typeof FORTNOX_INBOX_PATHS[keyof typeof FORTNOX_INBOX_PATHS];
 
+export function fortnoxInboxFolderId(folder: FortnoxInboxPath): string {
+  return folder.toLowerCase();
+}
+
 export class FortnoxApiError extends PublicAppError {
   constructor(
     status: number,
@@ -272,9 +276,8 @@ export async function uploadInboxFile(
   const token = await refreshIfNeeded(env, connection);
   const form = new FormData();
   form.append("file", file);
-  const endpoint = options.folderId
-    ? `${API_BASE}/inbox?folderid=${encodeURIComponent(options.folderId)}`
-    : `${API_BASE}/inbox?path=${encodeURIComponent(folder)}`;
+  const folderId = options.folderId ?? fortnoxInboxFolderId(folder);
+  const endpoint = `${API_BASE}/inbox?folderid=${encodeURIComponent(folderId)}`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -298,7 +301,7 @@ export async function uploadInboxFile(
   ).bind(
     syncId, "OUTBOUND", "FORTNOX_INBOX", "POST", endpoint, response.status,
     response.ok ? 1 : 0,
-    stringifyLogValue({ folder, folder_id: options.folderId ?? null, filename: file.name, mime_type: file.type, size: file.size }),
+    stringifyLogValue({ folder, folder_id: folderId, filename: file.name, mime_type: file.type, size: file.size }),
     stringifyLogValue(parsed),
     response.ok ? null : `HTTP ${response.status}`
   ).run();
@@ -316,7 +319,7 @@ export async function uploadInboxFile(
 
 export async function verifyInboxFolder(env: Env, folder: FortnoxInboxPath) {
   const result = await fortnoxRequest<any>(env, "/inbox", { method: "GET" });
-  const normalized = folder.toLowerCase();
+  const normalized = fortnoxInboxFolderId(folder);
   const match = result.Folder?.Folders?.find((item: any) => String(item.Id ?? "").toLowerCase() === normalized);
   if (!match?.Id) throw new PublicAppError(409, `Fortnox Inbox folder ${folder} not found`);
   return { folderId: String(match.Id), raw: result };

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { encryptString } from "../src/lib/crypto";
 import { PublicAppError } from "../src/lib/app-error";
+import { FORTNOX_INBOX_PATHS, uploadInboxFile } from "../src/integrations/fortnox/client";
 import { pushReceiptToFortnoxInbox } from "../src/integrations/fortnox/receipts";
 import { resetTables, testKey, workerEnv } from "./helpers";
 
@@ -65,6 +66,21 @@ describe("Fortnox receipt Inbox push", () => {
     expect(result.fortnox_file_id).toBe("file_1");
     expect(calls).toEqual([
       { method: "GET", path: "/3/inbox", search: "" },
+      { method: "POST", path: "/3/inbox", search: "?folderid=inbox_s" }
+    ]);
+  });
+
+  it("maps Inbox_s to the Fortnox folder id even when upload is called without a verified folder id", async () => {
+    const calls: Array<{ method: string; path: string; search: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ method: init?.method ?? "GET", path: url.pathname, search: url.search });
+      return Response.json({ File: { Id: "file_1", ArchiveFileId: "archive_1", Path: "inbox_s" } }, { status: 201 });
+    }));
+
+    await uploadInboxFile(workerEnv(), new File(["test"], "receipt.pdf", { type: "application/pdf" }), FORTNOX_INBOX_PATHS.SUPPLIER_DOCUMENT);
+
+    expect(calls).toEqual([
       { method: "POST", path: "/3/inbox", search: "?folderid=inbox_s" }
     ]);
   });

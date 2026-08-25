@@ -1292,8 +1292,8 @@ function Receipts() {
   const load=()=>api<any[]>("/api/receipts").then(setRows);
   useEffect(()=>{load().catch(console.error)},[]);
   async function upload(e:React.FormEvent<HTMLFormElement>){
-    e.preventDefault(); const fd=new FormData(e.currentTarget);
-    await api("/api/receipts",{method:"POST",body:fd}); (e.currentTarget as HTMLFormElement).reset(); await load();
+    e.preventDefault(); const form=e.currentTarget; const fd=new FormData(form);
+    await api("/api/receipts",{method:"POST",body:fd}); form.reset(); await load();
   }
   return <>
     <PageHead title="Kvitton & underlag" subtitle="Originalfilen sparas i R2. Fortnox Inbox används som extern adapter."/>
