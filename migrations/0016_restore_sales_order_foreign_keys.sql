@@ -159,12 +159,12 @@ CREATE TABLE invoice_rows (
 
 INSERT INTO invoice_rows (
   id, invoice_id, sort_order, description, quantity, unit, unit_price,
-  vat_percent, discount_percent, article_number, account_number, created_at,
+  vat_percent, discount_percent, article_number, account_number,
   product_id, price_id, billing_type, billing_interval, unit_price_minor
 )
 SELECT
   id, invoice_id, sort_order, description, quantity, unit, unit_price,
-  vat_percent, discount_percent, article_number, account_number, created_at,
+  vat_percent, discount_percent, article_number, account_number,
   product_id, price_id, billing_type, billing_interval, unit_price_minor
 FROM invoice_rows_0016_no_invoice_fk;
 
@@ -284,12 +284,12 @@ CREATE TABLE invoice_rows (
 
 INSERT INTO invoice_rows (
   id, invoice_id, sort_order, description, quantity, unit, unit_price,
-  vat_percent, discount_percent, article_number, account_number, created_at,
+  vat_percent, discount_percent, article_number, account_number,
   product_id, price_id, billing_type, billing_interval, unit_price_minor
 )
 SELECT
   id, invoice_id, sort_order, description, quantity, unit, unit_price,
-  vat_percent, discount_percent, article_number, account_number, created_at,
+  vat_percent, discount_percent, article_number, account_number,
   product_id, price_id, billing_type, billing_interval, unit_price_minor
 FROM invoice_rows_0016_restore_fk;
 

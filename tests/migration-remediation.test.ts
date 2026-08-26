@@ -45,6 +45,41 @@ FROM contract_flows_0012_preflight_old;
 DROP TABLE contract_flows_0012_preflight_old;
 `;
 
+const legacyInvoiceRowsCreatedAtCopy = `
+ALTER TABLE invoice_rows RENAME TO invoice_rows_0016_no_invoice_fk;
+
+CREATE TABLE invoice_rows (
+  id TEXT PRIMARY KEY,
+  invoice_id TEXT NOT NULL,
+  sort_order INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  unit TEXT,
+  unit_price REAL NOT NULL,
+  vat_percent REAL NOT NULL DEFAULT 25,
+  discount_percent REAL NOT NULL DEFAULT 0,
+  article_number TEXT,
+  account_number INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  product_id TEXT,
+  price_id TEXT,
+  billing_type TEXT NOT NULL DEFAULT 'ONE_TIME',
+  billing_interval TEXT,
+  unit_price_minor INTEGER
+);
+
+INSERT INTO invoice_rows (
+  id, invoice_id, sort_order, description, quantity, unit, unit_price,
+  vat_percent, discount_percent, article_number, account_number, created_at,
+  product_id, price_id, billing_type, billing_interval, unit_price_minor
+)
+SELECT
+  id, invoice_id, sort_order, description, quantity, unit, unit_price,
+  vat_percent, discount_percent, article_number, account_number, created_at,
+  product_id, price_id, billing_type, billing_interval, unit_price_minor
+FROM invoice_rows_0016_no_invoice_fk;
+`;
+
 async function execSql(script: string): Promise<void> {
   const statements = script
     .split(";")
@@ -277,7 +312,6 @@ CREATE TABLE invoice_rows (
   discount_percent REAL NOT NULL DEFAULT 0,
   article_number TEXT,
   account_number INTEGER,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   product_id TEXT,
   price_id TEXT,
   billing_type TEXT NOT NULL DEFAULT 'ONE_TIME',
@@ -427,6 +461,17 @@ describe("D1 sales_orders migration remediation", () => {
     );
   });
 
+  it("reproduces the pending 0016 failure when invoice_rows lacks created_at", async () => {
+    await resetMigrationFixture();
+    await execSql(fixtureSql);
+    await execSql(preflight0012);
+    await execSql([migration0012, migration0013, migration0014, migration0015].join("\n"));
+
+    await expect(execSql(legacyInvoiceRowsCreatedAtCopy)).rejects.toThrow(
+      /no such column: created_at/
+    );
+  });
+
   it("applies the preflight plus pending migration chain while preserving rows and FK integrity", async () => {
     await resetMigrationFixture();
     await execSql(fixtureSql);
@@ -466,6 +511,9 @@ describe("D1 sales_orders migration remediation", () => {
     await expect(tableCount("outbound_email_events")).resolves.toBe(beforeCounts.outboundEmailEvents);
     await expect(tableCount("invoices")).resolves.toBe(beforeCounts.invoices);
     await expect(tableCount("invoice_rows")).resolves.toBe(beforeCounts.invoiceRows);
+    await expect(first<{ created_at: string }>(
+      "SELECT created_at FROM invoice_rows WHERE id='ir_1'"
+    )).resolves.toMatchObject({ created_at: expect.any(String) });
 
     await expect(fkCount("sales_order_items", "sales_orders")).resolves.toBe(1);
     await expect(fkCount("customer_order_sessions", "sales_orders")).resolves.toBe(1);
