@@ -9,6 +9,42 @@ import migration0016 from "../migrations/0016_restore_sales_order_foreign_keys.s
 
 const migrationChain = [migration0012, migration0013, migration0014, migration0015, migration0016];
 
+const legacyPreflightWithoutEmailDependency = `
+ALTER TABLE contract_flows RENAME TO contract_flows_0012_preflight_old;
+
+CREATE TABLE contract_flows (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT,
+  source TEXT NOT NULL,
+  source_customer_id TEXT,
+  seller_name TEXT,
+  seller_id TEXT,
+  meeting_id TEXT,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  notes TEXT,
+  handoff_json TEXT NOT NULL,
+  draft_json TEXT NOT NULL,
+  sales_order_id TEXT,
+  customer_order_session_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+
+INSERT INTO contract_flows (
+  id, customer_id, source, source_customer_id, seller_name, seller_id, meeting_id,
+  status, notes, handoff_json, draft_json, sales_order_id, customer_order_session_id,
+  created_at, updated_at, completed_at
+)
+SELECT
+  id, customer_id, source, source_customer_id, seller_name, seller_id, meeting_id,
+  status, notes, handoff_json, draft_json, sales_order_id, customer_order_session_id,
+  created_at, updated_at, completed_at
+FROM contract_flows_0012_preflight_old;
+
+DROP TABLE contract_flows_0012_preflight_old;
+`;
+
 async function execSql(script: string): Promise<void> {
   const statements = script
     .split(";")
@@ -18,15 +54,26 @@ async function execSql(script: string): Promise<void> {
 }
 
 const fixtureSql = `
+CREATE TABLE d1_migrations (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  applied_at TEXT NOT NULL
+);
+
+INSERT INTO d1_migrations (id, name, applied_at)
+VALUES (11, '0011_outbound_email_events.sql', '2026-08-25 08:52:17');
+
 CREATE TABLE customers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL
 );
+
 CREATE TABLE offers (
   id TEXT PRIMARY KEY,
   customer_id TEXT NOT NULL,
   FOREIGN KEY(customer_id) REFERENCES customers(id)
 );
+
 CREATE TABLE offer_versions (
   id TEXT PRIMARY KEY,
   offer_id TEXT NOT NULL,
@@ -39,6 +86,7 @@ CREATE TABLE offer_versions (
   FOREIGN KEY(offer_id) REFERENCES offers(id),
   UNIQUE(offer_id, version_number)
 );
+
 CREATE TABLE offer_acceptances (
   id TEXT PRIMARY KEY,
   offer_id TEXT NOT NULL,
@@ -53,6 +101,7 @@ CREATE TABLE offer_acceptances (
   FOREIGN KEY(offer_version_id) REFERENCES offer_versions(id),
   FOREIGN KEY(customer_id) REFERENCES customers(id)
 );
+
 CREATE TABLE sales_orders (
   id TEXT PRIMARY KEY,
   offer_id TEXT NOT NULL,
@@ -70,6 +119,7 @@ CREATE TABLE sales_orders (
   FOREIGN KEY(acceptance_id) REFERENCES offer_acceptances(id),
   FOREIGN KEY(customer_id) REFERENCES customers(id)
 );
+
 CREATE TABLE sales_order_items (
   id TEXT PRIMARY KEY,
   sales_order_id TEXT NOT NULL,
@@ -86,6 +136,7 @@ CREATE TABLE sales_order_items (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(sales_order_id) REFERENCES sales_orders(id) ON DELETE CASCADE
 );
+
 CREATE TABLE customer_order_sessions (
   id TEXT PRIMARY KEY,
   sales_order_id TEXT NOT NULL,
@@ -116,10 +167,13 @@ CREATE TABLE customer_order_sessions (
   FOREIGN KEY(sales_order_id) REFERENCES sales_orders(id),
   FOREIGN KEY(customer_id) REFERENCES customers(id)
 );
+
 CREATE INDEX idx_customer_order_sessions_order
   ON customer_order_sessions(sales_order_id, status, expires_at);
+
 CREATE INDEX idx_customer_order_sessions_customer
   ON customer_order_sessions(customer_id, status, expires_at);
+
 CREATE TABLE contract_flows (
   id TEXT PRIMARY KEY,
   customer_id TEXT,
@@ -141,11 +195,17 @@ CREATE TABLE contract_flows (
   FOREIGN KEY(sales_order_id) REFERENCES sales_orders(id),
   FOREIGN KEY(customer_order_session_id) REFERENCES customer_order_sessions(id)
 );
-CREATE INDEX idx_contract_flows_customer ON contract_flows(customer_id, created_at);
+
+CREATE INDEX idx_contract_flows_customer
+  ON contract_flows(customer_id, created_at);
+
 CREATE INDEX idx_contract_flows_source_customer
   ON contract_flows(source, source_customer_id)
   WHERE source_customer_id IS NOT NULL;
-CREATE INDEX idx_contract_flows_status ON contract_flows(status, updated_at);
+
+CREATE INDEX idx_contract_flows_status
+  ON contract_flows(status, updated_at);
+
 CREATE TABLE subscriptions (
   id TEXT PRIMARY KEY,
   customer_id TEXT NOT NULL,
@@ -164,6 +224,7 @@ CREATE TABLE subscriptions (
   offer_version_id TEXT,
   FOREIGN KEY(customer_id) REFERENCES customers(id)
 );
+
 CREATE TABLE invoices (
   id TEXT PRIMARY KEY,
   fortnox_document_number TEXT UNIQUE,
@@ -195,12 +256,15 @@ CREATE TABLE invoices (
   FOREIGN KEY(customer_id) REFERENCES customers(id),
   FOREIGN KEY(source_offer_id) REFERENCES offers(id)
 );
+
 CREATE UNIQUE INDEX idx_invoices_sales_order
   ON invoices(sales_order_id)
   WHERE sales_order_id IS NOT NULL;
+
 CREATE UNIQUE INDEX idx_invoices_invoice_number
   ON invoices(invoice_number)
   WHERE invoice_number IS NOT NULL;
+
 CREATE TABLE invoice_rows (
   id TEXT PRIMARY KEY,
   invoice_id TEXT NOT NULL,
@@ -221,6 +285,7 @@ CREATE TABLE invoice_rows (
   unit_price_minor INTEGER,
   FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
 );
+
 CREATE TABLE outbound_email_events (
   id TEXT PRIMARY KEY,
   recipient TEXT NOT NULL,
@@ -243,6 +308,16 @@ CREATE TABLE outbound_email_events (
   FOREIGN KEY(offer_id) REFERENCES offers(id),
   FOREIGN KEY(invoice_id) REFERENCES invoices(id)
 );
+
+CREATE INDEX idx_outbound_email_events_flow
+  ON outbound_email_events(contract_flow_id, created_at DESC);
+
+CREATE INDEX idx_outbound_email_events_session
+  ON outbound_email_events(customer_order_session_id, created_at DESC);
+
+CREATE INDEX idx_outbound_email_events_status
+  ON outbound_email_events(status, created_at DESC);
+
 INSERT INTO customers (id, name) VALUES ('cus_1', 'Migration Demo AB');
 INSERT INTO offers (id, customer_id) VALUES ('off_1', 'cus_1');
 INSERT INTO offer_versions (id, offer_id, version_number, snapshot_json, subtotal, vat_total, total)
@@ -272,8 +347,13 @@ INSERT INTO invoice_rows (
   id, invoice_id, sort_order, description, quantity, unit, unit_price, vat_percent,
   discount_percent, unit_price_minor
 ) VALUES ('ir_1', 'inv_1', 1, 'Bas', 1, 'st', 100, 25, 0, 10000);
-INSERT INTO outbound_email_events (id, recipient, email_type, provider, status, subject)
-VALUES ('mail_1', 'demo@example.test', 'OFFER', 'RESEND', 'SENT', 'Offer');
+INSERT INTO outbound_email_events (
+  id, recipient, email_type, provider, provider_message_id, contract_flow_id,
+  customer_order_session_id, offer_id, invoice_id, status, subject, sent_at
+) VALUES (
+  'mail_1', 'demo@example.test', 'OFFER', 'RESEND', 'msg_1', 'cf_1',
+  'cos_1', 'off_1', 'inv_1', 'SENT', 'Offer', '2026-01-01T00:00:00Z'
+);
 `;
 
 async function resetMigrationFixture(): Promise<void> {
@@ -295,6 +375,7 @@ DROP TABLE IF EXISTS offer_acceptances;
 DROP TABLE IF EXISTS offer_versions;
 DROP TABLE IF EXISTS offers;
 DROP TABLE IF EXISTS customers;
+DROP TABLE IF EXISTS d1_migrations;
 `);
 }
 
@@ -308,6 +389,12 @@ async function fkCount(table: string, referencedTable: string): Promise<number> 
   return result.results.filter((row) => row.table === referencedTable).length;
 }
 
+async function first<T extends Record<string, unknown>>(sql: string): Promise<T> {
+  const row = await env.DB.prepare(sql).first<T>();
+  if (!row) throw new Error(`Expected row for ${sql}`);
+  return row;
+}
+
 describe("D1 sales_orders migration remediation", () => {
   it("reproduces the locked 0012 failure when D1 runs the migration in a transaction", async () => {
     await resetMigrationFixture();
@@ -318,26 +405,106 @@ describe("D1 sales_orders migration remediation", () => {
     );
   });
 
+  it("reproduces the remote preflight failure when outbound_email_events still references contract_flows", async () => {
+    await resetMigrationFixture();
+    await execSql(fixtureSql);
+
+    await expect(execSql(legacyPreflightWithoutEmailDependency)).rejects.toThrow(
+      /FOREIGN KEY constraint failed/
+    );
+  });
+
+  it("fails closed if the one-time preflight is run when 0012 is already applied", async () => {
+    await resetMigrationFixture();
+    await execSql(fixtureSql);
+    await env.DB.prepare(
+      `INSERT INTO d1_migrations (id, name, applied_at)
+       VALUES (12, '0012_contract_acceptance_semantics.sql', '2026-08-26 00:00:00')`
+    ).run();
+
+    await expect(execSql(preflight0012)).rejects.toThrow(
+      /CHECK constraint failed/
+    );
+  });
+
   it("applies the preflight plus pending migration chain while preserving rows and FK integrity", async () => {
     await resetMigrationFixture();
     await execSql(fixtureSql);
+
+    const beforeCounts = {
+      salesOrders: await tableCount("sales_orders"),
+      salesOrderItems: await tableCount("sales_order_items"),
+      customerOrderSessions: await tableCount("customer_order_sessions"),
+      contractFlows: await tableCount("contract_flows"),
+      outboundEmailEvents: await tableCount("outbound_email_events"),
+      invoices: await tableCount("invoices"),
+      invoiceRows: await tableCount("invoice_rows"),
+    };
+
     await execSql(preflight0012);
+
+    await expect(fkCount("outbound_email_events", "contract_flows")).resolves.toBe(0);
+    await expect(fkCount("outbound_email_events", "customer_order_sessions")).resolves.toBe(0);
+    await expect(fkCount("contract_flows", "sales_orders")).resolves.toBe(0);
+    await expect(fkCount("contract_flows", "customer_order_sessions")).resolves.toBe(0);
+    await expect(fkCount("customer_order_sessions", "sales_orders")).resolves.toBe(0);
+    await expect(fkCount("sales_order_items", "sales_orders")).resolves.toBe(0);
+
+    await expect(execSql(preflight0012)).rejects.toThrow(
+      /CHECK constraint failed/
+    );
+
     await execSql(migrationChain.join("\n"));
 
     const fkCheck = await env.DB.prepare("PRAGMA foreign_key_check").all();
     expect(fkCheck.results).toEqual([]);
 
-    await expect(tableCount("sales_orders")).resolves.toBe(1);
-    await expect(tableCount("sales_order_items")).resolves.toBe(1);
-    await expect(tableCount("customer_order_sessions")).resolves.toBe(1);
-    await expect(tableCount("contract_flows")).resolves.toBe(1);
-    await expect(tableCount("invoices")).resolves.toBe(1);
-    await expect(tableCount("invoice_rows")).resolves.toBe(1);
-    await expect(tableCount("outbound_email_events")).resolves.toBe(1);
+    await expect(tableCount("sales_orders")).resolves.toBe(beforeCounts.salesOrders);
+    await expect(tableCount("sales_order_items")).resolves.toBe(beforeCounts.salesOrderItems);
+    await expect(tableCount("customer_order_sessions")).resolves.toBe(beforeCounts.customerOrderSessions);
+    await expect(tableCount("contract_flows")).resolves.toBe(beforeCounts.contractFlows);
+    await expect(tableCount("outbound_email_events")).resolves.toBe(beforeCounts.outboundEmailEvents);
+    await expect(tableCount("invoices")).resolves.toBe(beforeCounts.invoices);
+    await expect(tableCount("invoice_rows")).resolves.toBe(beforeCounts.invoiceRows);
 
     await expect(fkCount("sales_order_items", "sales_orders")).resolves.toBe(1);
     await expect(fkCount("customer_order_sessions", "sales_orders")).resolves.toBe(1);
+    await expect(fkCount("contract_flows", "sales_orders")).resolves.toBe(1);
     await expect(fkCount("contract_flows", "customer_order_sessions")).resolves.toBe(1);
+    await expect(fkCount("outbound_email_events", "contract_flows")).resolves.toBe(1);
+    await expect(fkCount("outbound_email_events", "customer_order_sessions")).resolves.toBe(1);
+    await expect(fkCount("outbound_email_events", "offers")).resolves.toBe(1);
+    await expect(fkCount("outbound_email_events", "invoices")).resolves.toBe(1);
+
+    await expect(first<{ sales_order_id: string }>(
+      "SELECT sales_order_id FROM sales_order_items WHERE id='soi_1'"
+    )).resolves.toMatchObject({ sales_order_id: "so_1" });
+    await expect(first<{ sales_order_id: string }>(
+      "SELECT sales_order_id FROM customer_order_sessions WHERE id='cos_1'"
+    )).resolves.toMatchObject({ sales_order_id: "so_1" });
+    await expect(first<{ sales_order_id: string; customer_order_session_id: string }>(
+      "SELECT sales_order_id, customer_order_session_id FROM contract_flows WHERE id='cf_1'"
+    )).resolves.toMatchObject({
+      sales_order_id: "so_1",
+      customer_order_session_id: "cos_1",
+    });
+    await expect(first<{
+      provider_message_id: string;
+      contract_flow_id: string;
+      customer_order_session_id: string;
+      offer_id: string;
+      invoice_id: string;
+      status: string;
+    }>(
+      "SELECT provider_message_id, contract_flow_id, customer_order_session_id, offer_id, invoice_id, status FROM outbound_email_events WHERE id='mail_1'"
+    )).resolves.toMatchObject({
+      provider_message_id: "msg_1",
+      contract_flow_id: "cf_1",
+      customer_order_session_id: "cos_1",
+      offer_id: "off_1",
+      invoice_id: "inv_1",
+      status: "SENT",
+    });
 
     await env.DB.prepare(
       `INSERT INTO invoices (

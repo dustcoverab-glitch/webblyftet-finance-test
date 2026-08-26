@@ -1,5 +1,6 @@
--- Restores the sales_order/customer_order foreign keys removed by the one-time
--- 0012 preflight remediation. This must run after locked migrations 0012-0015.
+-- Restores the sales_order/customer_order/email foreign keys removed by the
+-- one-time 0012 preflight remediation. This must run after locked migrations
+-- 0012-0015.
 
 ALTER TABLE sales_order_items RENAME TO sales_order_items_0016_old;
 
@@ -314,3 +315,61 @@ SELECT
 FROM credit_invoices_0016_restore_fk;
 
 DROP TABLE credit_invoices_0016_restore_fk;
+
+ALTER TABLE outbound_email_events RENAME TO outbound_email_events_0016_old;
+
+CREATE TABLE outbound_email_events (
+  id TEXT PRIMARY KEY,
+  recipient TEXT NOT NULL,
+  email_type TEXT NOT NULL CHECK(email_type IN ('OFFER','INVOICE','CONFIRMATION')),
+  provider TEXT NOT NULL CHECK(provider IN ('RESEND')),
+  provider_message_id TEXT,
+  contract_flow_id TEXT,
+  customer_order_session_id TEXT,
+  offer_id TEXT,
+  invoice_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('PENDING','SENT','DELIVERED','BOUNCED','COMPLAINED','FAILED')),
+  subject TEXT NOT NULL,
+  failure_code TEXT,
+  failure_message TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at TEXT,
+  failed_at TEXT,
+  delivered_at TEXT,
+  bounced_at TEXT,
+  complained_at TEXT,
+  last_provider_event_id TEXT,
+  last_provider_event_type TEXT,
+  last_provider_event_at TEXT,
+  delivery_trigger TEXT NOT NULL DEFAULT 'MANUAL' CHECK(delivery_trigger IN ('AUTO','MANUAL')),
+  FOREIGN KEY(contract_flow_id) REFERENCES contract_flows(id),
+  FOREIGN KEY(customer_order_session_id) REFERENCES customer_order_sessions(id),
+  FOREIGN KEY(offer_id) REFERENCES offers(id),
+  FOREIGN KEY(invoice_id) REFERENCES invoices(id)
+);
+
+INSERT INTO outbound_email_events (
+  id, recipient, email_type, provider, provider_message_id, contract_flow_id,
+  customer_order_session_id, offer_id, invoice_id, status, subject,
+  failure_code, failure_message, created_at, sent_at, failed_at, delivered_at,
+  bounced_at, complained_at, last_provider_event_id, last_provider_event_type,
+  last_provider_event_at, delivery_trigger
+)
+SELECT
+  id, recipient, email_type, provider, provider_message_id, contract_flow_id,
+  customer_order_session_id, offer_id, invoice_id, status, subject,
+  failure_code, failure_message, created_at, sent_at, failed_at, delivered_at,
+  bounced_at, complained_at, last_provider_event_id, last_provider_event_type,
+  last_provider_event_at, delivery_trigger
+FROM outbound_email_events_0016_old;
+
+DROP TABLE outbound_email_events_0016_old;
+
+CREATE INDEX IF NOT EXISTS idx_outbound_email_flow
+  ON outbound_email_events(contract_flow_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_outbound_email_session
+  ON outbound_email_events(customer_order_session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_outbound_email_status
+  ON outbound_email_events(status, created_at DESC);

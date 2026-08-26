@@ -548,8 +548,9 @@ pnpm run db:migrate:test
 ```
 
 Detta är en one-time remediation för D1:s transaktionella migrationskörning.
-Den håller låsta `0012` oförändrad, låter Wrangler applicera `0012`-`0016`,
-och återställer de temporärt borttagna `sales_orders`-FK:erna i `0016`.
+Scriptet failar stängt om `0012` redan är applied eller om preflighten redan är
+körd. Den håller låsta `0012` oförändrad, låter Wrangler applicera
+`0012`-`0016`, och återställer de temporärt borttagna FK:erna i `0016`.
 
 ## Kvar innan skarp test
 

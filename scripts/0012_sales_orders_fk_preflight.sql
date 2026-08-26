@@ -1,8 +1,91 @@
 -- One-time preflight for remote D1 databases that have migrations 0012-0015 pending.
 --
 -- Run this before `wrangler d1 migrations apply DB --env test --remote`.
--- It removes only the foreign keys that point at sales_orders/customer_order_sessions
--- from tables that block the locked 0012 table rebuild. Migration 0016 restores them.
+-- It removes only the foreign keys that point at tables rebuilt by the locked
+-- 0012 table rebuild chain. Migration 0016 restores them.
+
+CREATE TABLE __preflight_0012_guard (
+  assertion TEXT NOT NULL CHECK(assertion = 'ok')
+);
+
+INSERT INTO __preflight_0012_guard (assertion)
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM d1_migrations WHERE name = '0012_contract_acceptance_semantics.sql'
+  ) THEN '0012_ALREADY_APPLIED'
+  WHEN EXISTS (
+    SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name IN (
+      'outbound_email_events_0012_preflight_old',
+      'contract_flows_0012_preflight_old',
+      'customer_order_sessions_0012_preflight_old',
+      'sales_order_items_0012_preflight_old'
+    )
+  ) THEN 'PREFLIGHT_ALREADY_STARTED'
+  WHEN (
+    SELECT COUNT(*) FROM pragma_foreign_key_list('outbound_email_events')
+    WHERE "table" IN ('contract_flows', 'customer_order_sessions')
+  ) < 2 THEN 'UNEXPECTED_OUTBOUND_EMAIL_EVENTS_FKS'
+  WHEN (
+    SELECT COUNT(*) FROM pragma_foreign_key_list('contract_flows')
+    WHERE "table" IN ('sales_orders', 'customer_order_sessions')
+  ) < 2 THEN 'UNEXPECTED_CONTRACT_FLOWS_FKS'
+  WHEN (
+    SELECT COUNT(*) FROM pragma_foreign_key_list('customer_order_sessions')
+    WHERE "table" = 'sales_orders'
+  ) < 1 THEN 'UNEXPECTED_CUSTOMER_ORDER_SESSIONS_FKS'
+  WHEN (
+    SELECT COUNT(*) FROM pragma_foreign_key_list('sales_order_items')
+    WHERE "table" = 'sales_orders'
+  ) < 1 THEN 'UNEXPECTED_SALES_ORDER_ITEMS_FKS'
+  ELSE 'ok'
+END;
+
+DROP TABLE __preflight_0012_guard;
+
+ALTER TABLE outbound_email_events RENAME TO outbound_email_events_0012_preflight_old;
+
+CREATE TABLE outbound_email_events (
+  id TEXT PRIMARY KEY,
+  recipient TEXT NOT NULL,
+  email_type TEXT NOT NULL CHECK(email_type IN ('OFFER','INVOICE','CONFIRMATION')),
+  provider TEXT NOT NULL CHECK(provider IN ('RESEND')),
+  provider_message_id TEXT,
+  contract_flow_id TEXT,
+  customer_order_session_id TEXT,
+  offer_id TEXT,
+  invoice_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('PENDING','SENT','FAILED')),
+  subject TEXT NOT NULL,
+  failure_code TEXT,
+  failure_message TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at TEXT,
+  failed_at TEXT,
+  FOREIGN KEY(offer_id) REFERENCES offers(id),
+  FOREIGN KEY(invoice_id) REFERENCES invoices(id)
+);
+
+INSERT INTO outbound_email_events (
+  id, recipient, email_type, provider, provider_message_id, contract_flow_id,
+  customer_order_session_id, offer_id, invoice_id, status, subject,
+  failure_code, failure_message, created_at, sent_at, failed_at
+)
+SELECT
+  id, recipient, email_type, provider, provider_message_id, contract_flow_id,
+  customer_order_session_id, offer_id, invoice_id, status, subject,
+  failure_code, failure_message, created_at, sent_at, failed_at
+FROM outbound_email_events_0012_preflight_old;
+
+DROP TABLE outbound_email_events_0012_preflight_old;
+
+CREATE INDEX IF NOT EXISTS idx_outbound_email_events_flow
+  ON outbound_email_events(contract_flow_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_outbound_email_events_session
+  ON outbound_email_events(customer_order_session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_outbound_email_events_status
+  ON outbound_email_events(status, created_at DESC);
 
 ALTER TABLE contract_flows RENAME TO contract_flows_0012_preflight_old;
 

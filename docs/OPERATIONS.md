@@ -110,10 +110,12 @@ pnpm run db:preflight:0012:test
 pnpm run db:migrate:test
 ```
 
-Preflighten bevarar rader och tar temporärt bort endast de beroende FK:er som
-blockerar den låsta rebuilden. `0016_restore_sales_order_foreign_keys.sql`
-återställer FK:erna efter `0012`-`0015` och verifieras med
-`PRAGMA foreign_key_check`.
+Preflighten failar stängt om `0012` redan är applied eller om förväntat schema
+inte matchar. Den bevarar rader och tar temporärt bort endast de beroende FK:er
+som blockerar den låsta rebuilden, inklusive
+`outbound_email_events -> contract_flows/customer_order_sessions`.
+`0016_restore_sales_order_foreign_keys.sql` återställer FK:erna efter
+`0012`-`0015` och verifieras med `PRAGMA foreign_key_check`.
 
 ## Avtal och arkiv
 
