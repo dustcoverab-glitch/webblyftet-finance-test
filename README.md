@@ -481,6 +481,62 @@ Incidentguide:
 - Fortnox failed: kontrollera `/api/operational-health`, `sync_log`, tenant/sandboxstatus och senaste Fortnox HTTP-status. Vid mappingfel, skapa inte ny remote resurs utan recovery-policy.
 - Resend failed: kontrollera `outbound_email_events`, `sync_log` och `/api/operational-health`. UI får bara visa skickat när provider har accepterat och email event är `SENT`.
 
+Critical events kan notifiera via `ADMIN_ALERT_EMAIL` när Resend är konfigurerat. Om alertmail saknar konfiguration sparas en `NOOP`/`SKIPPED` notification row så incidenten fortfarande är spårbar, men production guard kräver en riktig admin-alertadress innan skarp production.
+
+### Pilot Lifecycle
+
+Abonnemang har nu operativa lifecycle-actions för pilot:
+
+- Normal uppsägning görs som `cancel_at_period_end` mot Stripe och sparar effective end date lokalt.
+- Schemalagd uppsägning kan ångras innan periodslut.
+- Immediate cancel finns som separat privileged action och kräver `subscriptions.cancel_immediate`, vilket bara `ADMIN` och `FINANCE` har.
+- Misslyckad recurring betalning från verifierad Stripe webhook sätter subscription till `PAST_DUE` och behåller senaste Stripe invoice för retry/recovery.
+- Kortbyte sker via tokeniserad kundlänk och Stripe SetupIntent med `usage=off_session`; seller hanterar aldrig PAN/CVC.
+- Retry efter kortbyte försöker betala senaste past-due invoice, men accounting skapas fortfarande bara via canonical `invoice.paid`.
+
+Planändringar, upgrades/downgrades och full dunning/collections är uttryckligen utanför pilotpasset.
+
+### Credit Invoices
+
+Full kreditfaktura finns som separat dokument och lämnar originalfakturan immutable. Kreditfakturan:
+
+- får egen nummerserie `KTEST-`
+- refererar originalfakturan
+- kopierar rader som negativa/correcting lines
+- reverserar net, VAT och gross i minor units
+- skapar `INVOICE_CREDITED` accounting event på kreditfakturan
+- förbereder Fortnox sync via deras debit-invoice credit endpoint
+
+Partial credit/correction per rad eller belopp är dokumenterad som v1.1 och ska inte byggas före pilot utan separat scope.
+
+### Archiveable Contract Evidence
+
+Customer-order web view är inte samma sak som arkiverbart avtalsdokument. Efter `BASIC_ACCEPTANCE` kan intern API hämta ett archive evidence-paket med:
+
+- exakt signed snapshot
+- document hash
+- terms version
+- signer name/email
+- signed_at
+- session/order/offer references
+- provider = `BASIC_ACCEPTANCE`
+
+HTML-rendering av evidence finns som minsta exportfoundation. Riktig PDF/A-liknande arkiv-PDF och BankID ligger kvar som separata production-förberedelser. IP och user-agent sparas redan i acceptance/auditvägen för felsökning och evidence, men bör behandlas som personuppgifter och ha retention/minimering enligt GDPR.
+
+### Backup Drill
+
+Kör lokal drill/checklista utan att skapa falska backuper:
+
+```bash
+pnpm run backup:drill webblyftet-finance-test webblyftet-finance-test-receipts
+```
+
+Release-check verifierar också migrationsordning och checksums för låsta historiska migrationer:
+
+```bash
+pnpm run migrations:check
+```
+
 ## Kvar innan skarp test
 
 - Ersätt placeholder-D1-ID:n i `wrangler.jsonc`

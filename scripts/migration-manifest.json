@@ -1,0 +1,18 @@
+{
+  "locked": {
+    "0001_init.sql": "0efa3ce5398f0f39978f17d2b2cbb18bc53207d17815fcf4de62345019b67cc2",
+    "0002_finance_core.sql": "c25c8fd9666d8be0ae16d2cb1e77d0a4d345e8f0415de35415e20ea7f7d4901b",
+    "0003_stabilize_finance_core.sql": "6330b31cca57b6725fe664833d697c3534f93f188554194a1a42082507cb9be1",
+    "0004_setup_intent_secret_hygiene.sql": "71749d2abcdf6738ed4fcbfab0d0f4c0a64b53f9b0c019e275c4626224aa9f1a",
+    "0005_business_flow.sql": "5f228fb1ea69cc7d61c7287ba0147d7d2517efe6e37af7b947acb54f0959bea9",
+    "0006_stabilize_business_flow.sql": "f0e11f27519c6ae3647088c68ce524a3fe7cc321c2ac8995218cd832de57d0c9",
+    "0007_receipt_inbox_idempotency.sql": "f9d329af660f05ce5263732c38b1ad186f29e53c5a3e267f55e2ec4708ccf751",
+    "0008_security_rate_limits.sql": "37a14d35ce383bbf940bbe9882698fdd27b795dbe12167c7dc1975bf95b51293",
+    "0009_customer_order_onboarding.sql": "8feb589ab18abeb8e122eb628eed42f0ac34c4b51eca61fe11dd4d43f7612e21",
+    "0010_contract_flows.sql": "7d65877a2be501009758aa87fe91dc32ba7499bd21d2abbb4e7cea6f082a2a23",
+    "0011_outbound_email_events.sql": "5aa04e4d32a896de4eb745dc85509b7828e6e6da905df19f122e0617f589ace3",
+    "0012_contract_acceptance_semantics.sql": "371cfd4920bce0e6219f5f4590b4a8848d3977d71db03e0be31b653e35256d13",
+    "0013_authorization_operational_events.sql": "e8acc50932c1851be4d52771fbbd5b56331d1d36064af61f1b721291ba461456",
+    "0014_email_lifecycle_operations.sql": "6edb0565513e9fd04f6fa5690eedc1a81f19673b74a038381a934837186f1f59"
+  }
+}

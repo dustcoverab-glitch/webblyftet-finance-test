@@ -1,5 +1,6 @@
 import { id } from "./db";
 import { sanitizeForLog, stringifyLogValue } from "./security";
+import { notifyOperationalEvent, shouldNotifyOperationalEvent } from "./alerting";
 
 export type OperationalSeverity = "INFO" | "WARNING" | "ERROR" | "CRITICAL";
 
@@ -62,6 +63,12 @@ export async function emitOperationalAlert(env: Env, input: OperationalEventInpu
     input.request_id ?? null,
     stringifyLogValue(sanitizeForLog(input.details ?? null))
   ).run();
+  const row = await env.DB.prepare(
+    "SELECT id,event_type,severity,occurrence_count FROM operational_events WHERE dedupe_key=? AND resolved_at IS NULL"
+  ).bind(dedupeKey).first<{ id: string; event_type: string; severity: string; occurrence_count: number }>();
+  if (row && shouldNotifyOperationalEvent(row)) {
+    await notifyOperationalEvent(env, row.id).catch(() => undefined);
+  }
 }
 
 export async function operationalHealth(env: Env) {

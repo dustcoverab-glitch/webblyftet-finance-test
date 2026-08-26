@@ -46,6 +46,9 @@ jobs:
       - name: Wrangler types
         run: pnpm exec wrangler types
 
+      - name: Migration safety
+        run: pnpm run migrations:check
+
       - name: Typecheck
         run: pnpm run typecheck
 
@@ -59,4 +62,4 @@ jobs:
         run: pnpm run build
 
       - name: Wrangler dry-run
-        run: pnpm exec wrangler deploy --env test --dry-run
+        run: pnpm run release:check

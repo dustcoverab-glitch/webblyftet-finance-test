@@ -11,6 +11,7 @@ import {
   webblyftetCompanyProfile,
   type DocumentLine
 } from "./documents";
+import { buildContractArchiveEvidence, renderContractArchiveHtml } from "./documents/archive";
 import {
   createPrice,
   createProduct,
@@ -62,11 +63,22 @@ import { renderInvoiceDocumentForToken } from "./integrations/email/documents";
 import { createOrReuseStripeCustomer } from "./integrations/stripe/customers";
 import {
   activateStripeSubscription,
-  cancelStripeSubscriptionAtPeriodEnd,
   createPaymentMethodSetupIntent,
   syncPriceToStripe,
   syncProductToStripe
 } from "./integrations/stripe/subscriptions";
+import {
+  cancelSubscriptionImmediately,
+  confirmPaymentMethodUpdate,
+  createPaymentMethodUpdateLink,
+  createPaymentMethodUpdateSetupIntent,
+  getPaymentMethodUpdateSession,
+  retryPastDueSubscriptionPayment,
+  scheduleSubscriptionCancellation,
+  undoScheduledSubscriptionCancellation
+} from "./core/subscription-lifecycle";
+import { createFullCreditInvoice } from "./core/credit-invoices";
+import { syncCreditInvoiceToFortnox } from "./integrations/fortnox/credit-invoices";
 import { constructStripeWebhookEvent, processStripeEvent } from "./integrations/stripe/webhooks";
 import {
   csrfProtection,
@@ -419,6 +431,21 @@ app.post("/customer-order/:token/activate", async (c) => {
   return c.json(await activateCustomerOrder(c.env, c.req.param("token")));
 });
 
+app.get("/customer-order/card-update/:token/session", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await getPaymentMethodUpdateSession(c.env, c.req.param("token")));
+});
+
+app.post("/customer-order/card-update/:token/payment-method/setup", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await createPaymentMethodUpdateSetupIntent(c.env, c.req.param("token")));
+});
+
+app.post("/customer-order/card-update/:token/payment-method/confirm", async (c) => {
+  c.header("Cache-Control", "private, no-store");
+  return c.json(await confirmPaymentMethodUpdate(c.env, c.req.param("token")));
+});
+
 async function serveCustomerOrderApp(c: Context<{ Bindings: Env }>) {
   const url = new URL(c.req.url);
   url.pathname = "/customer-order.html";
@@ -522,11 +549,35 @@ app.post("/api/subscriptions/:id/activate", requirePermission("subscriptions.man
 });
 
 app.post("/api/subscriptions/:id/cancel", requirePermission("subscriptions.manage"), async (c) => {
-  return c.json(await cancelStripeSubscriptionAtPeriodEnd(c.env, c.req.param("id")));
+  return c.json(await scheduleSubscriptionCancellation(c.env, c.req.param("id")));
+});
+
+app.post("/api/subscriptions/:id/cancel/undo", requirePermission("subscriptions.manage"), async (c) => {
+  return c.json(await undoScheduledSubscriptionCancellation(c.env, c.req.param("id")));
+});
+
+const immediateCancelSchema = z.object({ reason: z.string().min(1) });
+
+app.post("/api/subscriptions/:id/cancel/immediate", requirePermission("subscriptions.cancel_immediate"), zValidator("json", immediateCancelSchema), async (c) => {
+  return c.json(await cancelSubscriptionImmediately(c.env, c.req.param("id"), c.req.valid("json").reason));
+});
+
+app.post("/api/subscriptions/:id/payment-method-update-link", requirePermission("subscriptions.manage"), async (c) => {
+  return c.json(await createPaymentMethodUpdateLink(c.env, c.req.param("id")));
+});
+
+app.post("/api/subscriptions/:id/retry-payment", requirePermission("subscriptions.manage"), async (c) => {
+  return c.json(await retryPastDueSubscriptionPayment(c.env, c.req.param("id")));
 });
 
 app.post("/api/sales-orders/:id/customer-session", requirePermission("contract_flow.write"), async (c) => {
   return c.json(await createCustomerOrderSession(c.env, c.req.param("id")));
+});
+
+app.get("/api/customer-order-sessions/:id/archive-evidence", requirePermission("offers.read"), async (c) => {
+  const evidence = await buildContractArchiveEvidence(c.env, c.req.param("id"));
+  if (c.req.query("format") === "html") return c.html(renderContractArchiveHtml(evidence));
+  return c.json(evidence);
 });
 
 const rowSchema = z.object({
@@ -872,6 +923,14 @@ app.post("/api/invoices/:id/send-email", requirePermission("invoices.write"), as
   return c.json(await sendInvoiceEmail(c.env, c.req.param("id"), { manual: true }));
 });
 
+const creditInvoiceSchema = z.object({
+  reason: z.string().optional()
+});
+
+app.post("/api/invoices/:id/credit", requirePermission("invoices.write"), zValidator("json", creditInvoiceSchema), async (c) => {
+  return c.json(await createFullCreditInvoice(c.env, c.req.param("id"), c.req.valid("json").reason));
+});
+
 app.post("/api/invoices/pull", requirePermission("fortnox.sync"), async (c) => {
   const invoices = await pullInvoicesFromFortnox(c.env);
   for (const item of invoices) {
@@ -902,6 +961,8 @@ app.post("/api/invoices/pull", requirePermission("fortnox.sync"), async (c) => {
 });
 
 app.post("/api/invoices/:id/sync-fortnox", requirePermission("fortnox.sync"), async (c) => {
+  const invoice = await one<any>(c.env.DB, "SELECT invoice_type FROM invoices WHERE id=?", c.req.param("id"));
+  if (invoice?.invoice_type === "CREDIT_INVOICE") return c.json(await syncCreditInvoiceToFortnox(c.env, c.req.param("id")));
   return c.json(await syncInvoiceToFortnox(c.env, c.req.param("id")));
 });
 

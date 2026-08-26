@@ -48,7 +48,10 @@ const PUBLIC_CUSTOMER_ORDER_ROUTES: PublicCustomerOrderRoute[] = [
   { method: "POST", segments: ["customer-order", ":token", "sign"] },
   { method: "POST", segments: ["customer-order", ":token", "payment-method", "setup"] },
   { method: "POST", segments: ["customer-order", ":token", "payment-method", "confirm"] },
-  { method: "POST", segments: ["customer-order", ":token", "activate"] }
+  { method: "POST", segments: ["customer-order", ":token", "activate"] },
+  { method: "GET", segments: ["customer-order", "card-update", ":token", "session"] },
+  { method: "POST", segments: ["customer-order", "card-update", ":token", "payment-method", "setup"] },
+  { method: "POST", segments: ["customer-order", "card-update", ":token", "payment-method", "confirm"] }
 ];
 
 export function isLocalEnvironment(env: Env): boolean {

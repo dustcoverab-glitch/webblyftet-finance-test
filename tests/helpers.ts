@@ -32,6 +32,7 @@ export function workerEnv(overrides: TestEnvOverrides = {}): Env {
     EMAIL_FROM: "offers@example.test",
     EMAIL_FROM_NAME: "Webblyftet",
     EMAIL_REPLY_TO: "ekonomi@example.test",
+    ADMIN_ALERT_EMAIL: "ops@example.test",
     LOCAL_DEV_EMAIL: "admin@example.test",
     ADMIN_EMAILS: "admin@example.test",
     FINANCE_EMAILS: "finance@example.test",
@@ -68,6 +69,8 @@ export async function resetTables(db = env.DB): Promise<void> {
     )`,
     `INSERT OR IGNORE INTO document_sequences(name,prefix,next_number)
       VALUES ('TEST_INVOICE','TEST-',1)`,
+    `INSERT OR IGNORE INTO document_sequences(name,prefix,next_number)
+      VALUES ('TEST_CREDIT_INVOICE','KTEST-',1)`,
     `CREATE TABLE IF NOT EXISTS sync_log (
       id TEXT PRIMARY KEY,
       direction TEXT NOT NULL,
@@ -265,6 +268,12 @@ export async function resetTables(db = env.DB): Promise<void> {
       current_period_start TEXT,
       current_period_end TEXT,
       cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+      cancellation_effective_at TEXT,
+      cancelled_at TEXT,
+      cancellation_reason TEXT,
+      latest_stripe_invoice_id TEXT,
+      payment_action_required_at TEXT,
+      payment_recovered_at TEXT,
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -295,6 +304,7 @@ export async function resetTables(db = env.DB): Promise<void> {
       invoice_date TEXT,
       due_date TEXT,
       currency TEXT NOT NULL DEFAULT 'SEK',
+      remarks TEXT,
       subtotal REAL NOT NULL DEFAULT 0,
       vat_total REAL NOT NULL DEFAULT 0,
       total REAL NOT NULL DEFAULT 0,
@@ -303,6 +313,11 @@ export async function resetTables(db = env.DB): Promise<void> {
       vat_total_minor INTEGER,
       total_minor INTEGER,
       balance_minor INTEGER,
+      original_invoice_id TEXT,
+      credited_by_invoice_id TEXT,
+      credit_reason TEXT,
+      credit_type TEXT,
+      fortnox_credit_invoice_reference TEXT,
       booked INTEGER NOT NULL DEFAULT 0,
       cancelled INTEGER NOT NULL DEFAULT 0,
       sync_status TEXT NOT NULL DEFAULT 'LOCAL_ONLY',
@@ -312,7 +327,10 @@ export async function resetTables(db = env.DB): Promise<void> {
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_sales_order
       ON invoices(sales_order_id)
-      WHERE sales_order_id IS NOT NULL`,
+      WHERE sales_order_id IS NOT NULL AND invoice_type!='CREDIT_INVOICE'`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_original_invoice_credit
+      ON invoices(original_invoice_id)
+      WHERE original_invoice_id IS NOT NULL AND invoice_type='CREDIT_INVOICE'`,
     `CREATE TABLE IF NOT EXISTS invoice_rows (
       id TEXT PRIMARY KEY,
       invoice_id TEXT NOT NULL,
@@ -322,6 +340,9 @@ export async function resetTables(db = env.DB): Promise<void> {
       unit TEXT,
       unit_price REAL NOT NULL,
       vat_percent REAL NOT NULL DEFAULT 25,
+      discount_percent REAL NOT NULL DEFAULT 0,
+      article_number TEXT,
+      account_number INTEGER,
       product_id TEXT,
       price_id TEXT,
       billing_type TEXT NOT NULL DEFAULT 'ONE_TIME',
@@ -393,6 +414,21 @@ export async function resetTables(db = env.DB): Promise<void> {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_payment_method_setup_sessions_customer
       ON payment_method_setup_sessions(customer_id, status, expires_at)`,
+    `CREATE TABLE IF NOT EXISTS payment_method_update_sessions (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      subscription_id TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      public_token_enc TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'CREATED',
+      expires_at TEXT NOT NULL,
+      opened_at TEXT,
+      completed_at TEXT,
+      stripe_setup_intent_id TEXT,
+      payment_method_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE TABLE IF NOT EXISTS customer_order_sessions (
       id TEXT PRIMARY KEY,
       sales_order_id TEXT NOT NULL,
@@ -556,7 +592,27 @@ export async function resetTables(db = env.DB): Promise<void> {
       last_used_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(invoice_id)
-    )`
+    )`,
+    `CREATE TABLE IF NOT EXISTS credit_invoices (
+      id TEXT PRIMARY KEY,
+      original_invoice_id TEXT NOT NULL UNIQUE,
+      credit_invoice_id TEXT NOT NULL UNIQUE,
+      credit_reason TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS alert_notifications (
+      id TEXT PRIMARY KEY,
+      operational_event_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      recipient TEXT,
+      status TEXT NOT NULL,
+      provider_message_id TEXT,
+      failure_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      sent_at TEXT
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_notifications_event_provider
+      ON alert_notifications(operational_event_id, provider, recipient)`
   ];
   for (const statement of statements) {
     await db.prepare(statement).run();
@@ -569,15 +625,19 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("DELETE FROM fortnox_connections").run();
   await db.prepare("DELETE FROM oauth_states").run();
   await db.prepare("UPDATE document_sequences SET next_number=1, updated_at=CURRENT_TIMESTAMP WHERE name='TEST_INVOICE'").run();
+  await db.prepare("UPDATE document_sequences SET next_number=1, updated_at=CURRENT_TIMESTAMP WHERE name='TEST_CREDIT_INVOICE'").run();
   await db.prepare("DELETE FROM audit_log").run();
   await db.prepare("DELETE FROM integration_events").run();
+  await db.prepare("DELETE FROM alert_notifications").run();
   await db.prepare("DELETE FROM operational_events").run();
   await db.prepare("DELETE FROM outbound_email_events").run();
   await db.prepare("DELETE FROM email_provider_events").run();
   await db.prepare("DELETE FROM invoice_document_tokens").run();
+  await db.prepare("DELETE FROM credit_invoices").run();
   await db.prepare("DELETE FROM accounting_events").run();
   await db.prepare("DELETE FROM payment_methods").run();
   await db.prepare("DELETE FROM payment_method_setup_sessions").run();
+  await db.prepare("DELETE FROM payment_method_update_sessions").run();
   await db.prepare("DELETE FROM contract_flows").run();
   await db.prepare("DELETE FROM customer_order_sessions").run();
   await db.prepare("DELETE FROM payment_attempts").run();

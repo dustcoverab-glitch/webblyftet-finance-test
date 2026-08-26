@@ -21,6 +21,7 @@
 - `EMAIL_FROM` använder verifierad Webblyftet-domän, inte `onboarding@resend.dev`.
 - Company data är skarp: legal name, org.nr, VAT, adress, bankgiro/IBAN/BIC.
 - `BASIC_ACCEPTANCE` presenteras inte som BankID eller kvalificerad signatur.
+- `ADMIN_ALERT_EMAIL` går till bevakad ekonomiadress.
 
 ## Provider setup
 
@@ -38,6 +39,8 @@ Kör:
 ```bash
 pnpm release:check
 ```
+
+`pnpm release:check` kör migrationscheck, typecheck, full testsuite, build och Wrangler dry-run. Branch protection på `main` bör kräva grön CI innan merge.
 
 Innan migration:
 

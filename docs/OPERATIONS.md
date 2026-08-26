@@ -74,3 +74,29 @@ Följande ska skapa operational events med dedupe:
 - Worker unhandled exception: `ERROR`
 
 `operational_events` har `status`, `resolved_at` och `acknowledged_at` för framtida dashboard/alerting.
+
+Pass 5 alert channel:
+
+- `CRITICAL` operational events ska lämna databasen via Resend till `ADMIN_ALERT_EMAIL` när email provider är konfigurerad.
+- Repeated `STRIPE_PAYMENT_FAILED` notifieras först när samma öppna dedupe-key har inträffat minst två gånger.
+- Om alertkanalen saknar recipient/provider sparas en `NOOP`/`SKIPPED` notification row. Det är acceptabelt i local/test men inte production.
+- Alertpayload får inte innehålla Authorization headers, tokens, client secrets eller filinnehåll.
+
+## Backup/restore drill
+
+Kör:
+
+```bash
+pnpm run backup:drill webblyftet-finance-test webblyftet-finance-test-receipts
+```
+
+Scriptet skriver ut kommandon och checklistor men exekverar inte destructive restore. Vid riktig restore:
+
+1. Skapa backup/export av nuvarande läge först.
+2. Återställ bara efter incidentbeslut.
+3. Validera D1-tabeller, R2 receipt mappings, Stripe/Fortnox provider references och customer-order public routes.
+4. Dokumentera backup-id/exportfil, commit SHA och Worker Version ID.
+
+## Avtal och arkiv
+
+`BASIC_ACCEPTANCE` är enkel testsignering. Det arkiverbara underlaget ska vara signed snapshot + hash + terms version + signer + timestamp + provider/reference. Riktig production-signering med BankID och PDF/A-liknande långtidsarkiv är separat scope.

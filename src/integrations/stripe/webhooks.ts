@@ -186,6 +186,9 @@ async function handleStripeInvoicePaid(env: Env, invoice: Stripe.Invoice) {
   if (!subscriptionId) return;
   const subscription = await one<any>(env.DB, "SELECT * FROM subscriptions WHERE stripe_subscription_id=?", subscriptionId);
   if (!subscription) return;
+  await env.DB.prepare(
+    "UPDATE subscriptions SET latest_stripe_invoice_id=?, payment_action_required_at=NULL, payment_recovered_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(invoice.id, subscription.id).run();
   const customerId = subscription.customer_id;
   const paymentIntentId = await stripeInvoicePaymentIntentId(env, invoice);
   const gross = invoice.amount_paid ?? invoice.total ?? 0;
@@ -273,7 +276,9 @@ async function handleStripeInvoicePaymentFailed(env: Env, invoice: Stripe.Invoic
   if (!subscriptionId) return;
   const subscription = await one<any>(env.DB, "SELECT * FROM subscriptions WHERE stripe_subscription_id=?", subscriptionId);
   if (!subscription) return;
-  await env.DB.prepare("UPDATE subscriptions SET status='PAST_DUE', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(subscription.id).run();
+  await env.DB.prepare(
+    "UPDATE subscriptions SET status='PAST_DUE', latest_stripe_invoice_id=?, payment_action_required_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(invoice.id, subscription.id).run();
   const payment = await upsertPayment(env, {
     customer_id: subscription.customer_id,
     subscription_id: subscription.id,
@@ -416,6 +421,7 @@ async function syncStripeSubscription(env: Env, stripeSubscription: Stripe.Subsc
     current_period_start?: number;
     current_period_end?: number;
     cancel_at_period_end?: boolean;
+    canceled_at?: number | null;
   };
   await env.DB.prepare(
     `UPDATE subscriptions
@@ -424,6 +430,10 @@ async function syncStripeSubscription(env: Env, stripeSubscription: Stripe.Subsc
          current_period_start=?,
          current_period_end=?,
          cancel_at_period_end=?,
+         cancellation_effective_at=?,
+         cancelled_at=?,
+         payment_action_required_at=CASE WHEN ? IN ('past_due','unpaid') THEN COALESCE(payment_action_required_at,CURRENT_TIMESTAMP) ELSE payment_action_required_at END,
+         payment_recovered_at=CASE WHEN ? IN ('active','trialing') AND status='PAST_DUE' THEN CURRENT_TIMESTAMP ELSE payment_recovered_at END,
          updated_at=CURRENT_TIMESTAMP
      WHERE id=?`
   ).bind(
@@ -432,6 +442,10 @@ async function syncStripeSubscription(env: Env, stripeSubscription: Stripe.Subsc
     stripeTimestampToIso(raw.current_period_start),
     stripeTimestampToIso(raw.current_period_end),
     raw.cancel_at_period_end ? 1 : 0,
+    raw.cancel_at_period_end ? stripeTimestampToIso(raw.current_period_end) : null,
+    stripeTimestampToIso(raw.canceled_at ?? undefined),
+    stripeSubscription.status,
+    stripeSubscription.status,
     existing.id
   ).run();
   await reconcileCustomerOrderCompletionForSalesOrder(env, existing.sales_order_id);

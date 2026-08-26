@@ -91,6 +91,10 @@ export function emailReplyTo(env: Env): string | undefined {
   return isPlaceholder(raw) ? undefined : raw || undefined;
 }
 
+export function adminAlertEmail(env: Env): string {
+  return value(env, "ADMIN_ALERT_EMAIL");
+}
+
 export function stripeSecretKey(env: Env): string {
   requireStripeConfigured(env);
   return value(env, "STRIPE_SECRET_KEY");
@@ -149,6 +153,7 @@ export function validateProductionGuards(env: Env): void {
   if (value(env, "APP_BASE_URL").includes("workers.dev") || isPlaceholder(value(env, "APP_BASE_URL"))) problems.push("production base URL");
   if (isPlaceholder(value(env, "CF_ACCESS_TEAM_DOMAIN")) || isPlaceholder(value(env, "CF_ACCESS_AUD"))) problems.push("Cloudflare Access config");
   if (isPlaceholder(value(env, "ADMIN_EMAILS")) || isPlaceholder(value(env, "FINANCE_EMAILS"))) problems.push("authorization groups");
+  if (isPlaceholder(value(env, "ADMIN_ALERT_EMAIL"))) problems.push("admin alert email");
   const companyFields = [
     "WEBBLYFTET_LEGAL_NAME",
     "WEBBLYFTET_ORG_NUMBER",

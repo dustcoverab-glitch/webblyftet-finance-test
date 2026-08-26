@@ -91,4 +91,44 @@ describe("operational observability", () => {
     expect(health.latest.unresolved_recent_errors).toBe(1);
     expect(health.open[0]).toMatchObject({ event_type: "STRIPE_PAYMENT_FAILED", subscription_id: "sub_123" });
   });
+
+  it("sends critical operational alerts through the configured alert channel", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "email_alert_1" }), { status: 200, headers: { "content-type": "application/json" } })
+    );
+    await emitOperationalAlert(workerEnv(), {
+      event_type: "WORKER_UNHANDLED_ERROR",
+      severity: "CRITICAL",
+      message: "Unhandled worker failure",
+      request_id: "req_alert",
+      details: { authorization: "Bearer hidden", safe: "kept" }
+    });
+
+    const notification = await workerEnv().DB.prepare("SELECT provider,status,provider_message_id FROM alert_notifications").first<any>();
+    expect(notification).toMatchObject({ provider: "RESEND", status: "SENT", provider_message_id: "email_alert_1" });
+    expect(vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers).toBeTruthy();
+  });
+
+  it("keeps repeated payment failures quiet until the threshold is reached", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ id: "email_alert_2" }));
+    await emitOperationalAlert(workerEnv(), {
+      event_type: "STRIPE_PAYMENT_FAILED",
+      severity: "ERROR",
+      message: "Recurring payment failed",
+      dedupe_key: "stripe-payment:sub_123",
+      subscription_id: "sub_123"
+    });
+    let notificationCount = await workerEnv().DB.prepare("SELECT COUNT(*) count FROM alert_notifications").first<{ count: number }>();
+    expect(notificationCount?.count).toBe(0);
+
+    await emitOperationalAlert(workerEnv(), {
+      event_type: "STRIPE_PAYMENT_FAILED",
+      severity: "ERROR",
+      message: "Recurring payment failed again",
+      dedupe_key: "stripe-payment:sub_123",
+      subscription_id: "sub_123"
+    });
+    notificationCount = await workerEnv().DB.prepare("SELECT COUNT(*) count FROM alert_notifications").first<{ count: number }>();
+    expect(notificationCount?.count).toBe(1);
+  });
 });

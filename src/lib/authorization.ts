@@ -11,6 +11,7 @@ export type Permission =
   | "invoices.read"
   | "invoices.write"
   | "subscriptions.manage"
+  | "subscriptions.cancel_immediate"
   | "fortnox.sync"
   | "fortnox.disconnect"
   | "receipts.manage"
@@ -33,6 +34,7 @@ export const rolePermissions: Record<Role, Permission[]> = {
     "invoices.read",
     "invoices.write",
     "subscriptions.manage",
+    "subscriptions.cancel_immediate",
     "fortnox.sync",
     "fortnox.disconnect",
     "receipts.manage",
@@ -45,6 +47,7 @@ export const rolePermissions: Record<Role, Permission[]> = {
     "invoices.read",
     "invoices.write",
     "subscriptions.manage",
+    "subscriptions.cancel_immediate",
     "fortnox.sync",
     "receipts.manage",
     "bookkeeping.read"
