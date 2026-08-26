@@ -7,8 +7,10 @@ import {
 import { currentUserFromRequest } from "./authorization";
 
 const STRIPE_WEBHOOK_PATH = "/webhooks/stripe";
+const RESEND_WEBHOOK_PATH = "/webhooks/resend";
 const CUSTOMER_ORDER_PREFIX = "/customer-order/";
 const CUSTOMER_ORDER_ASSETS_PREFIX = "/customer-order-assets/";
+const INVOICE_DOCUMENT_PREFIX = "/invoice-documents/";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SENSITIVE_LOG_KEYS = /authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|client_secret|secret|password|api[_-]?key|cookie|set-cookie|stripe[_-]?.*secret/i;
 const SENSITIVE_TEXT_PATTERNS = [
@@ -57,6 +59,10 @@ export function isExactStripeWebhookPath(pathname: string): boolean {
   return pathname === STRIPE_WEBHOOK_PATH;
 }
 
+export function isExactResendWebhookPath(pathname: string): boolean {
+  return pathname === RESEND_WEBHOOK_PATH;
+}
+
 export function isPublicCustomerOrderPath(method: string, pathname: string): boolean {
   const normalizedMethod = method.toUpperCase();
   if (normalizedMethod === "GET" && pathname.startsWith(CUSTOMER_ORDER_ASSETS_PREFIX)) return true;
@@ -67,8 +73,17 @@ export function isPublicCustomerOrderPath(method: string, pathname: string): boo
   });
 }
 
+export function isPublicInvoiceDocumentPath(method: string, pathname: string): boolean {
+  if (method.toUpperCase() !== "GET" || !pathname.startsWith(INVOICE_DOCUMENT_PREFIX)) return false;
+  const segments = pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  return segments.length === 2 && segments[0] === "invoice-documents" && isSafePublicTokenSegment(segments[1]);
+}
+
 export function isPublicRoute(method: string, pathname: string): boolean {
-  return (method.toUpperCase() === "POST" && isExactStripeWebhookPath(pathname)) || isPublicCustomerOrderPath(method, pathname);
+  return (
+    method.toUpperCase() === "POST" &&
+    (isExactStripeWebhookPath(pathname) || isExactResendWebhookPath(pathname))
+  ) || isPublicCustomerOrderPath(method, pathname) || isPublicInvoiceDocumentPath(method, pathname);
 }
 
 export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> {
@@ -111,6 +126,7 @@ export function csrfProtection(): MiddlewareHandler<{ Bindings: Env }> {
     const url = new URL(c.req.url);
     if (
       isExactStripeWebhookPath(url.pathname) ||
+      isExactResendWebhookPath(url.pathname) ||
       isLocalEnvironment(c.env) ||
       !cloudflareAccessRequired(c.env) ||
       !UNSAFE_METHODS.has(c.req.method.toUpperCase())

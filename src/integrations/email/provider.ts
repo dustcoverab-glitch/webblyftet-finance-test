@@ -5,8 +5,9 @@ import { stringifyLogValue } from "../../lib/security";
 import { emitOperationalAlert } from "../../lib/operations";
 
 export type EmailType = "OFFER" | "INVOICE" | "CONFIRMATION";
-export type EmailDeliveryStatus = "PENDING" | "SENT" | "FAILED";
+export type EmailDeliveryStatus = "PENDING" | "SENT" | "DELIVERED" | "BOUNCED" | "COMPLAINED" | "FAILED";
 export type EmailProviderName = "RESEND";
+export type EmailDeliveryTrigger = "AUTO" | "MANUAL";
 
 export type EmailMessage = {
   to: string;

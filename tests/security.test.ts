@@ -75,7 +75,7 @@ describe("API health and Access middleware", () => {
         method: "POST",
         body: "{}"
       }),
-      workerEnv({ APP_ENV: "test" }),
+      workerEnv({ APP_ENV: "test", STRIPE_WEBHOOK_SECRET: "whsec_test" } as any),
       createExecutionContext()
     );
     expect(exact.status).toBe(400);
@@ -141,10 +141,15 @@ describe("API health and Access middleware", () => {
     expect(isPublicRoute("POST", `/customer-order/${token}/sign`)).toBe(true);
     expect(isPublicRoute("GET", "/customer-order-assets/customer-order.js")).toBe(true);
     expect(isPublicRoute("POST", "/webhooks/stripe")).toBe(true);
+    expect(isPublicRoute("POST", "/webhooks/resend")).toBe(true);
+    expect(isPublicRoute("GET", `/invoice-documents/${token}`)).toBe(true);
 
     expect(isPublicRoute("GET", "/webhooks/stripe")).toBe(false);
     expect(isPublicRoute("GET", "/webhooks/stripe/foo")).toBe(false);
     expect(isPublicRoute("GET", "/webhooks/stripe-test")).toBe(false);
+    expect(isPublicRoute("GET", "/webhooks/resend")).toBe(false);
+    expect(isPublicRoute("POST", "/webhooks/resend/foo")).toBe(false);
+    expect(isPublicRoute("GET", "/invoice-documents")).toBe(false);
     expect(isPublicRoute("GET", "/customer-order-test")).toBe(false);
     expect(isPublicRoute("GET", "/customer-order/internal")).toBe(false);
     expect(isPublicRoute("GET", `/customer-order/${token}/admin`)).toBe(false);

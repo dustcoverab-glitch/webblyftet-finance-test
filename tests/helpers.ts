@@ -28,6 +28,7 @@ export function workerEnv(overrides: TestEnvOverrides = {}): Env {
     CF_ACCESS_AUD: "test-aud",
     MAX_RECEIPT_UPLOAD_BYTES: "10485760",
     RESEND_API_KEY: "test-resend-key",
+    RESEND_WEBHOOK_SECRET: "whsec_d2ViaG9va190ZXN0X3NlY3JldA",
     EMAIL_FROM: "offers@example.test",
     EMAIL_FROM_NAME: "Webblyftet",
     EMAIL_REPLY_TO: "ekonomi@example.test",
@@ -100,7 +101,8 @@ export async function resetTables(db = env.DB): Promise<void> {
       occurrence_count INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      resolved_at TEXT
+      resolved_at TEXT,
+      acknowledged_at TEXT
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_operational_events_open_dedupe
       ON operational_events(dedupe_key)
@@ -525,7 +527,35 @@ export async function resetTables(db = env.DB): Promise<void> {
       failure_message TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       sent_at TEXT,
-      failed_at TEXT
+      failed_at TEXT,
+      delivered_at TEXT,
+      bounced_at TEXT,
+      complained_at TEXT,
+      last_provider_event_id TEXT,
+      last_provider_event_type TEXT,
+      last_provider_event_at TEXT,
+      delivery_trigger TEXT NOT NULL DEFAULT 'MANUAL'
+    )`,
+    `CREATE TABLE IF NOT EXISTS email_provider_events (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      provider_event_id TEXT NOT NULL,
+      provider_message_id TEXT,
+      event_type TEXT NOT NULL,
+      payload_json TEXT,
+      processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(provider, provider_event_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS invoice_document_tokens (
+      id TEXT PRIMARY KEY,
+      invoice_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      token_enc TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(invoice_id)
     )`
   ];
   for (const statement of statements) {
@@ -543,6 +573,8 @@ export async function resetTables(db = env.DB): Promise<void> {
   await db.prepare("DELETE FROM integration_events").run();
   await db.prepare("DELETE FROM operational_events").run();
   await db.prepare("DELETE FROM outbound_email_events").run();
+  await db.prepare("DELETE FROM email_provider_events").run();
+  await db.prepare("DELETE FROM invoice_document_tokens").run();
   await db.prepare("DELETE FROM accounting_events").run();
   await db.prepare("DELETE FROM payment_methods").run();
   await db.prepare("DELETE FROM payment_method_setup_sessions").run();

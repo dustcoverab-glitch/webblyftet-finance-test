@@ -56,6 +56,9 @@ import { pullInvoicesFromFortnox, syncInvoiceToFortnox } from "./integrations/fo
 import { pullSupplierInvoicesFromFortnox, pullVouchersFromFortnox } from "./integrations/fortnox/accounting";
 import { pushReceiptToFortnoxInbox } from "./integrations/fortnox/receipts";
 import { sendContractFlowOfferEmail } from "./integrations/email/offers";
+import { sendInvoiceEmail } from "./integrations/email/invoices";
+import { processResendWebhook } from "./integrations/email/webhooks";
+import { renderInvoiceDocumentForToken } from "./integrations/email/documents";
 import { createOrReuseStripeCustomer } from "./integrations/stripe/customers";
 import {
   activateStripeSubscription,
@@ -73,7 +76,7 @@ import {
   safeReceiptContentDisposition,
   securityHeaders
 } from "./lib/security";
-import { isStripeConfigured, isStripePublishableKeyConfigured, maxReceiptUploadBytes } from "./lib/config";
+import { isStripeConfigured, isStripePublishableKeyConfigured, maxReceiptUploadBytes, validateProductionGuards } from "./lib/config";
 import { requirePermission } from "./lib/authorization";
 import { operationalHealth } from "./lib/operations";
 
@@ -81,6 +84,10 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.onError((error, c) => errorJson(c, error));
 app.use("*", securityHeaders());
+app.use("*", async (c, next) => {
+  validateProductionGuards(c.env);
+  await next();
+});
 app.use("*", requireCloudflareAccess());
 app.use("*", csrfProtection());
 app.use("*", rateLimitSensitiveRoutes());
@@ -97,6 +104,22 @@ app.post("/webhooks/stripe", async (c) => {
   const event = await constructStripeWebhookEvent(c.env, rawBody, c.req.header("stripe-signature") ?? null);
   return c.json(await processStripeEvent(c.env, event));
 });
+
+app.all("/webhooks/resend", async (c, next) => {
+  if (c.req.method !== "POST") return c.text("Not found", 404);
+  await next();
+});
+
+app.post("/webhooks/resend", async (c) => {
+  const rawBody = await c.req.text();
+  return c.json(await processResendWebhook(c.env, rawBody, {
+    id: c.req.header("svix-id") ?? null,
+    timestamp: c.req.header("svix-timestamp") ?? null,
+    signature: c.req.header("svix-signature") ?? null
+  }));
+});
+
+app.get("/invoice-documents/:token", async (c) => c.html(await renderInvoiceDocumentForToken(c.env, c.req.param("token"))));
 
 app.get("/api/dashboard", requirePermission("bookkeeping.read"), async (c) => {
   const [
@@ -843,6 +866,10 @@ app.get("/api/invoices/:id/document", requirePermission("invoices.read"), async 
     return c.json({ subject: "Din faktura från Webblyftet", body: renderInvoiceEmailPreview(input) });
   }
   return c.html(renderInvoiceDocument(c.env, input));
+});
+
+app.post("/api/invoices/:id/send-email", requirePermission("invoices.write"), async (c) => {
+  return c.json(await sendInvoiceEmail(c.env, c.req.param("id"), { manual: true }));
 });
 
 app.post("/api/invoices/pull", requirePermission("fortnox.sync"), async (c) => {

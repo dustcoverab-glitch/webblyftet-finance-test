@@ -11,7 +11,8 @@
     "deploy:production": "npm run build && wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
     "cf-types": "wrangler types",
-    "test": "WRANGLER_LOG_PATH=.wrangler/logs FORTNOX_CLIENT_ID=test-placeholder FORTNOX_CLIENT_SECRET=test-placeholder TOKEN_ENCRYPTION_KEY_BASE64=test-placeholder STRIPE_SECRET_KEY=test-placeholder STRIPE_WEBHOOK_SECRET=test-placeholder RESEND_API_KEY=test-placeholder EMAIL_FROM=offers@example.test EMAIL_FROM_NAME=Webblyftet EMAIL_REPLY_TO=ekonomi@example.test vitest run",
+    "test": "WRANGLER_LOG_PATH=.wrangler/logs FORTNOX_CLIENT_ID=test-placeholder FORTNOX_CLIENT_SECRET=test-placeholder TOKEN_ENCRYPTION_KEY_BASE64=test-placeholder STRIPE_SECRET_KEY=test-placeholder STRIPE_WEBHOOK_SECRET=test-placeholder RESEND_API_KEY=test-placeholder RESEND_WEBHOOK_SECRET=whsec_d2ViaG9va190ZXN0X3NlY3JldA EMAIL_FROM=offers@example.test EMAIL_FROM_NAME=Webblyftet EMAIL_REPLY_TO=ekonomi@example.test vitest run",
+    "release:check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm exec wrangler deploy --env test --dry-run",
     "db:migrate:local": "wrangler d1 migrations apply webblyftet-finance-test-local --local",
     "db:migrate:test": "wrangler d1 migrations apply webblyftet-finance-test --remote --env test",
     "db:migrate:production": "wrangler d1 migrations apply webblyftet-finance-production --remote --env production"

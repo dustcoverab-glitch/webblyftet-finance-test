@@ -1000,7 +1000,14 @@ function ContractFlowWorkspace() {
     }
   }
   const latestOfferEmail = (flow.email_events ?? []).find((event:any)=>event.email_type === "OFFER");
-  const latestSentOfferEmail = (flow.email_events ?? []).find((event:any)=>event.email_type === "OFFER" && event.status === "SENT");
+  const latestSentOfferEmail = (flow.email_events ?? []).find((event:any)=>event.email_type === "OFFER" && ["SENT", "DELIVERED", "BOUNCED", "COMPLAINED"].includes(String(event.status)));
+  const offerEmailStateText = latestSentOfferEmail?.status === "DELIVERED"
+    ? "Levererat"
+    : latestSentOfferEmail?.status === "BOUNCED"
+      ? "Studsat"
+      : latestSentOfferEmail?.status === "COMPLAINED"
+        ? "Rapporterat som spam"
+        : "Skickat";
   const steps = [
     ["Kunduppgifter", !missing.some((m:any)=>String(m.field).startsWith("company") || String(m.field).startsWith("contact"))],
     ["Offert skapad", Boolean(flow.sales_order_id)],
@@ -1078,8 +1085,8 @@ function ContractFlowWorkspace() {
           {customerLink && <div className="copyNotice"><strong>Kundlänken är redo</strong><input readOnly value={customerLink} onFocus={(event)=>event.currentTarget.select()}/><div className="copyActions"><button className="ghost small" onClick={copyCustomerLink}>Kopiera länk</button><a className="button ghost small" href={customerLink} target="_blank" rel="noopener noreferrer">Öppna kundvy</a><button className="ghost small" disabled>Skicka via e-post</button></div>{copyState !== "IDLE" && <small>{copyFeedbackText(copyState)}</small>}</div>}
           {flow.customer_order_session && !customerLink && <div className="copyNotice"><strong>Kundsession finns</strong><small>Sessionen finns redan. Skapa ingen ny session om inte avtalsversionen ändras senare.</small></div>}
           <div className="copyNotice">
-            <strong>{latestSentOfferEmail ? `Skickat till ${latestSentOfferEmail.recipient}` : latestOfferEmail?.status === "FAILED" ? "Offertmail misslyckades" : "Offertmail ej skickat"}</strong>
-            <small>{latestSentOfferEmail ? `Skickat ${latestSentOfferEmail.sent_at || latestSentOfferEmail.created_at}` : latestOfferEmail?.failure_message || "Skicka först när kundlänken och offertversionen är redo."}</small>
+            <strong>{latestSentOfferEmail ? `${offerEmailStateText} till ${latestSentOfferEmail.recipient}` : latestOfferEmail?.status === "FAILED" ? "Offertmail misslyckades" : "Offertmail ej skickat"}</strong>
+            <small>{latestSentOfferEmail ? `${offerEmailStateText} ${latestSentOfferEmail.delivered_at || latestSentOfferEmail.sent_at || latestSentOfferEmail.created_at}` : latestOfferEmail?.failure_message || "Skicka först när kundlänken och offertversionen är redo."}</small>
             <div className="copyActions"><button className="small" onClick={sendOfferEmail} disabled={sendingOffer || !contact.email}>{sendingOffer ? "Skickar…" : latestSentOfferEmail ? "Skicka igen" : "Skicka offert till kund"}</button></div>
             {latestSentOfferEmail?.provider_message_id && <small>Resend ID: {latestSentOfferEmail.provider_message_id}</small>}
           </div>

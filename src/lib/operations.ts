@@ -10,6 +10,9 @@ export type OperationalEventType =
   | "FORTNOX_AUTH_FAILED"
   | "EMAIL_SEND_FAILED"
   | "EMAIL_BOUNCED"
+  | "EMAIL_COMPLAINED"
+  | "EMAIL_DELIVERY_DELAYED"
+  | "EMAIL_WEBHOOK_ERROR"
   | "CUSTOMER_ORDER_STALLED"
   | "WORKER_UNHANDLED_ERROR";
 
@@ -64,7 +67,7 @@ export async function emitOperationalAlert(env: Env, input: OperationalEventInpu
 export async function operationalHealth(env: Env) {
   const rows = await env.DB.prepare(
     `SELECT event_type,severity,status,message,customer_id,contract_flow_id,sales_order_id,invoice_id,subscription_id,
-       provider,provider_event_id,request_id,occurrence_count,created_at,last_seen_at
+       provider,provider_event_id,request_id,occurrence_count,created_at,last_seen_at,resolved_at,acknowledged_at
      FROM operational_events
      WHERE status='OPEN'
      ORDER BY
@@ -76,7 +79,7 @@ export async function operationalHealth(env: Env) {
     `SELECT
        (SELECT last_seen_at FROM operational_events WHERE event_type IN ('STRIPE_WEBHOOK_ERROR','STRIPE_PAYMENT_FAILED') ORDER BY last_seen_at DESC LIMIT 1) latest_stripe_failure,
        (SELECT last_seen_at FROM operational_events WHERE event_type IN ('FORTNOX_SYNC_FAILED','FORTNOX_AUTH_FAILED') ORDER BY last_seen_at DESC LIMIT 1) latest_fortnox_failure,
-       (SELECT last_seen_at FROM operational_events WHERE event_type='EMAIL_SEND_FAILED' ORDER BY last_seen_at DESC LIMIT 1) latest_email_failure,
+       (SELECT last_seen_at FROM operational_events WHERE event_type IN ('EMAIL_SEND_FAILED','EMAIL_BOUNCED','EMAIL_COMPLAINED','EMAIL_DELIVERY_DELAYED','EMAIL_WEBHOOK_ERROR') ORDER BY last_seen_at DESC LIMIT 1) latest_email_failure,
        (SELECT COUNT(*) FROM operational_events WHERE status='OPEN' AND severity IN ('ERROR','CRITICAL')) unresolved_recent_errors`
   ).first<any>();
   return { latest, open: rows.results };

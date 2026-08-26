@@ -352,3 +352,93 @@ export function renderInvoiceEmailPreview(input: InvoiceDocumentInput): string {
   const displayNumber = humanDocumentNumber("invoice", input.document_number, input.invoice_date);
   return `Din faktura från Webblyftet\n\nHej ${input.customer.contact_name || input.customer.name || ""},\n\nHär kommer en sammanfattning av fakturan.\n\nFakturanummer: ${displayNumber}\nFakturadatum: ${input.invoice_date}\nFörfallodatum: ${input.due_date || "-"}\nBelopp att betala: ${formatMinor(input.balance_minor, currency)}\n\nCTA: Visa faktura\n\nDetta är ett Finance Test-demo-mail.`;
 }
+
+export function renderInvoiceEmail(input: InvoiceDocumentInput, invoiceUrl: string): { subject: string; html: string; text: string } {
+  const company = input.company ?? webblyftetCompanyProfile({} as Env);
+  const currency = input.currency ?? "SEK";
+  const displayNumber = humanDocumentNumber("invoice", input.document_number, input.invoice_date);
+  const contact = input.customer.contact_name || input.customer.name || "";
+  const subject = `Din faktura från ${company.brand_name}: ${displayNumber}`;
+  const html = `<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+  <body style="margin:0;background:#eef2f8;color:#12233f;font-family:Inter,Arial,sans-serif">
+    <main style="max-width:720px;margin:0 auto;padding:28px 16px">
+      <section style="background:#fff;border:1px solid #d8e0ec;padding:30px">
+        <div style="font-size:24px;font-weight:900;margin-bottom:18px"><span style="display:inline-block;background:#1d4ed8;color:#fff;border-radius:3px;padding:6px 10px;margin-right:8px">W</span>${escapeHtml(company.brand_name)}</div>
+        <p>Hej ${escapeHtml(contact)},</p>
+        <p>Här kommer fakturan för ${escapeHtml(input.customer.name || "ert företag")}.</p>
+        <table style="width:100%;border-collapse:collapse;margin:22px 0">
+          <tr><td style="color:#51617a;padding:4px 0">Fakturanummer</td><td style="text-align:right"><strong>${escapeHtml(displayNumber)}</strong></td></tr>
+          <tr><td style="color:#51617a;padding:4px 0">Fakturadatum</td><td style="text-align:right">${escapeHtml(input.invoice_date)}</td></tr>
+          <tr><td style="color:#51617a;padding:4px 0">Förfallodatum</td><td style="text-align:right">${escapeHtml(input.due_date || "-")}</td></tr>
+          <tr><td style="color:#51617a;padding:4px 0">Att betala</td><td style="text-align:right"><strong>${formatMinor(input.balance_minor, currency)}</strong></td></tr>
+        </table>
+        <p><a href="${escapeHtml(invoiceUrl)}" style="display:inline-block;background:#12233f;color:#fff;text-decoration:none;border-radius:3px;padding:12px 16px;font-weight:800">Visa faktura</a></p>
+        <p style="color:#51617a;font-size:13px;line-height:1.5">Detta är ett testmail från Finance Test. Om knappen inte fungerar kan du kopiera länken: ${escapeHtml(invoiceUrl)}</p>
+      </section>
+    </main>
+  </body></html>`;
+  const text = [
+    `Din faktura från ${company.brand_name}`,
+    "",
+    `Hej ${contact},`,
+    "",
+    `Kundföretag: ${input.customer.name || "-"}`,
+    `Fakturanummer: ${displayNumber}`,
+    `Fakturadatum: ${input.invoice_date}`,
+    `Förfallodatum: ${input.due_date || "-"}`,
+    `Belopp att betala: ${formatMinor(input.balance_minor, currency)}`,
+    "",
+    "Visa faktura:",
+    invoiceUrl
+  ].join("\n");
+  return { subject, html, text };
+}
+
+export function renderConfirmationEmail(input: {
+  company?: CompanyProfile;
+  customer_name?: string | null;
+  contact_name?: string | null;
+  order_reference?: string | null;
+  offer_reference?: string | null;
+  signed_at?: string | null;
+  subscription_active?: boolean;
+  invoice_numbers?: string[];
+}): { subject: string; html: string; text: string } {
+  const company = input.company ?? webblyftetCompanyProfile({} as Env);
+  const customer = input.customer_name || "ert företag";
+  const contact = input.contact_name || customer;
+  const subject = `Bekräftelse från ${company.brand_name}`;
+  const invoiceText = input.invoice_numbers?.length ? input.invoice_numbers.join(", ") : "Ingen engångsfaktura i detta flöde";
+  const subscriptionText = input.subscription_active ? "Abonnemanget är aktivt." : "Inget aktivt abonnemang i detta flöde.";
+  const html = `<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+  <body style="margin:0;background:#eef2f8;color:#12233f;font-family:Inter,Arial,sans-serif">
+    <main style="max-width:720px;margin:0 auto;padding:28px 16px">
+      <section style="background:#fff;border:1px solid #d8e0ec;padding:30px">
+        <div style="font-size:24px;font-weight:900;margin-bottom:18px"><span style="display:inline-block;background:#1d4ed8;color:#fff;border-radius:3px;padding:6px 10px;margin-right:8px">W</span>${escapeHtml(company.brand_name)}</div>
+        <p>Hej ${escapeHtml(contact)},</p>
+        <p>Vi bekräftar att beställningen för ${escapeHtml(customer)} är klar i Finance Test.</p>
+        <ul>
+          <li>Order: ${escapeHtml(input.order_reference || "-")}</li>
+          <li>Offert: ${escapeHtml(input.offer_reference || "-")}</li>
+          <li>Signering: ${escapeHtml(input.signed_at || "Klar")}</li>
+          <li>${escapeHtml(subscriptionText)}</li>
+          <li>Faktura: ${escapeHtml(invoiceText)}</li>
+        </ul>
+        <p style="color:#51617a;font-size:13px;line-height:1.5">Detta är en testbekräftelse från Finance Test.</p>
+      </section>
+    </main>
+  </body></html>`;
+  const text = [
+    `Bekräftelse från ${company.brand_name}`,
+    "",
+    `Hej ${contact},`,
+    "",
+    `Beställningen för ${customer} är klar i Finance Test.`,
+    `Order: ${input.order_reference || "-"}`,
+    `Offert: ${input.offer_reference || "-"}`,
+    `Signering: ${input.signed_at || "Klar"}`,
+    subscriptionText,
+    `Faktura: ${invoiceText}`
+  ].join("\n");
+  return { subject, html, text };
+}

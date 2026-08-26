@@ -4,6 +4,8 @@ import { sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
 import { WEBBLYFTET_TERMS_VERSION } from "../documents/terms";
 import { calculateMoneyTotals, minorToMoney, moneyToMinor } from "../lib/money";
+import { sendInvoiceEmail } from "../integrations/email/invoices";
+import { emailAutoSendEnabled } from "../lib/config";
 
 export type OfferInputRow = {
   product_id?: string | null;
@@ -507,6 +509,9 @@ export async function createInternalInvoiceFromSalesOrder(env: Env, salesOrderId
   ]);
   await ensureInvoiceAccountingEvent(env, invoiceId);
   await audit(env, "INVOICE_CREATED", "invoice", invoiceId, null, { sales_order_id: salesOrderId });
+  if (emailAutoSendEnabled(env)) {
+    await sendInvoiceEmail(env, invoiceId).catch(() => undefined);
+  }
   return one<any>(env.DB, "SELECT * FROM invoices WHERE id=?", invoiceId);
 }
 

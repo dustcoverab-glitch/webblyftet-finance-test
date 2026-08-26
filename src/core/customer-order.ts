@@ -3,9 +3,10 @@ import { acceptPreparedSalesOrder } from "./business-flow";
 import { audit } from "./finance";
 import { activateStripeSubscription, createPaymentMethodSetupIntent } from "../integrations/stripe/subscriptions";
 import { stripeClient } from "../integrations/stripe/client";
+import { sendCustomerOrderConfirmationEmail } from "../integrations/email/confirmations";
 import { basicAcceptanceSigningProvider } from "../integrations/signing";
 import type { SigningSnapshot } from "../integrations/signing";
-import { isStripeConfigured, isStripePublishableKeyConfigured } from "../lib/config";
+import { emailAutoSendEnabled, isStripeConfigured, isStripePublishableKeyConfigured } from "../lib/config";
 import { decryptString, encryptString, sha256Hex } from "../lib/crypto";
 import { id, one } from "../lib/db";
 import { PublicAppError } from "../lib/app-error";
@@ -522,6 +523,9 @@ async function completeCustomerOrder(env: Env, session: CustomerOrderSession): P
   ).bind(session.id).run();
   if ((result.meta.changes ?? 0) === 1) {
     await audit(env, "SYSTEM", null, "CUSTOMER_ORDER_COMPLETED", "sales_order", session.sales_order_id, null, { customer_order_session_id: session.id });
+    if (emailAutoSendEnabled(env)) {
+      await sendCustomerOrderConfirmationEmail(env, session.id).catch(() => undefined);
+    }
   }
   await env.DB.prepare(
     "UPDATE sales_orders SET status='COMPLETED', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!='COMPLETED'"

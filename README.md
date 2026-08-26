@@ -115,6 +115,7 @@ Required secrets deklareras i `wrangler.jsonc`:
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
 - `RESEND_API_KEY`
+- `RESEND_WEBHOOK_SECRET`
 
 Sätt dem per miljö. Exempel för test:
 
@@ -125,6 +126,7 @@ npx wrangler secret put TOKEN_ENCRYPTION_KEY_BASE64 --env test
 npx wrangler secret put STRIPE_SECRET_KEY --env test
 npx wrangler secret put STRIPE_WEBHOOK_SECRET --env test
 npx wrangler secret put RESEND_API_KEY --env test
+npx wrangler secret put RESEND_WEBHOOK_SECRET --env test
 ```
 
 Inga secrets skickas till frontend. Browsern autentiseras inte med `x-admin-api-key`; deployad testmiljö ska skyddas med Cloudflare Access framför hela applikationen.
@@ -132,6 +134,23 @@ Inga secrets skickas till frontend. Browsern autentiseras inte med `x-admin-api-
 ## Resend
 
 Finance Test skickar offertmail via Resends HTTPS API. `SENT` betyder att Resend har accepterat meddelandet och returnerat ett provider message ID, inte att mottagaren har öppnat eller klickat mailet.
+
+Delivery lifecycle i D1:
+
+- `PENDING`: lokalt email-event är skapat.
+- `SENT`: Resend har accepterat sändningen.
+- `DELIVERED`: Resends verifierade webhook säger att mailet levererats till mottagande mailserver.
+- `BOUNCED`: permanent leveransfel.
+- `COMPLAINED`: mottagaren har markerat mailet som spam.
+- `FAILED`: Resend accepterade inte sändningen eller rapporterade send failure.
+
+Resend webhook:
+
+- endpoint: `POST /webhooks/resend`
+- public route: exakt POST-endpoint, inte `/webhooks/resend/*`
+- kräver Svix/Resend-signaturheaders `svix-id`, `svix-timestamp`, `svix-signature`
+- `RESEND_WEBHOOK_SECRET` ska sättas som Worker secret per miljö
+- webhook replay dedupliceras via provider event id
 
 Manuell setup innan live-deploy av mailflödet:
 
@@ -150,6 +169,7 @@ Exempel:
 
 ```bash
 npx wrangler secret put RESEND_API_KEY --env test
+npx wrangler secret put RESEND_WEBHOOK_SECRET --env test
 ```
 
 `EMAIL_FROM`, `EMAIL_FROM_NAME` och `EMAIL_REPLY_TO` ligger som vanliga environment variables i `wrangler.jsonc` eftersom de inte är hemligheter. API key får aldrig skrivas till Git, D1, frontend eller loggar.

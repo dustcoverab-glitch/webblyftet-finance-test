@@ -27,7 +27,8 @@
   "secrets": {
     "required": [
       "TOKEN_ENCRYPTION_KEY_BASE64",
-      "RESEND_API_KEY"
+      "RESEND_API_KEY",
+      "RESEND_WEBHOOK_SECRET"
     ]
   },
   "vars": {
@@ -41,6 +42,7 @@
     "EMAIL_FROM": "offers@REPLACE_WITH_VERIFIED_DOMAIN",
     "EMAIL_FROM_NAME": "Webblyftet",
     "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
+    "ENABLE_EMAIL_AUTOSEND": "false",
     "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print",
     "LOCAL_DEV_EMAIL": "local-admin@webblyftet.test",
     "ADMIN_EMAILS": "local-admin@webblyftet.test",
@@ -73,7 +75,8 @@
       "secrets": {
         "required": [
           "TOKEN_ENCRYPTION_KEY_BASE64",
-          "RESEND_API_KEY"
+          "RESEND_API_KEY",
+          "RESEND_WEBHOOK_SECRET"
         ]
       },
       "vars": {
@@ -87,6 +90,7 @@
         "EMAIL_FROM": "onboarding@resend.dev",
         "EMAIL_FROM_NAME": "Webblyftet",
         "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
+        "ENABLE_EMAIL_AUTOSEND": "true",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print",
         "LOCAL_DEV_EMAIL": "",
         "ADMIN_EMAILS": "sandberg@creziainvest.se,wisen@creziainvest.se",
@@ -114,7 +118,8 @@
       "secrets": {
         "required": [
           "TOKEN_ENCRYPTION_KEY_BASE64",
-          "RESEND_API_KEY"
+          "RESEND_API_KEY",
+          "RESEND_WEBHOOK_SECRET"
         ]
       },
       "vars": {
@@ -128,6 +133,7 @@
         "EMAIL_FROM": "offers@REPLACE_WITH_VERIFIED_DOMAIN",
         "EMAIL_FROM_NAME": "Webblyftet",
         "EMAIL_REPLY_TO": "ekonomi@REPLACE_WITH_VERIFIED_DOMAIN",
+        "ENABLE_EMAIL_AUTOSEND": "true",
         "FORTNOX_SCOPES": "companyinformation customer invoice offer order payment supplier supplierinvoice bookkeeping inbox connectfile settings print",
         "LOCAL_DEV_EMAIL": "",
         "ADMIN_EMAILS": "REPLACE_WITH_ADMIN_EMAILS",

@@ -77,6 +77,12 @@ Cloudflare Dashboard click path:
 6. Open the protected app settings and copy the Application Audience (AUD) tag.
 7. Set `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` in `wrangler.jsonc` or as environment vars, then redeploy.
 
+3. Exact Resend webhook bypass
+   - Hostname: `webblyftet-finance-test.webblyftet-finance-test.workers.dev`
+   - Path: `/webhooks/resend`
+   - Policy/action: bypass so Resend can POST webhooks.
+   - Do not bypass `/webhooks/resend/*`, `/api/*`, `/assets/*`, or `/`.
+
 ## CSRF
 
 Mutating browser endpoints require same-origin `Origin` or `Referer` when Cloudflare Access is required. Stripe webhook is excluded and uses Stripe signature verification instead.
@@ -108,6 +114,8 @@ Never commit:
 - `TOKEN_ENCRYPTION_KEY_BASE64`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
+- `RESEND_API_KEY`
+- `RESEND_WEBHOOK_SECRET`
 - `FORTNOX_CLIENT_SECRET`
 - access tokens, refresh tokens, API tokens, cookies, or OAuth codes.
 
@@ -136,3 +144,4 @@ Rotation procedure:
 - Run full tests, build, Wrangler dry-run, migrations, and a deployment smoke test.
 - Review dependency audit and upgrade non-breaking vulnerable packages.
 - Run a final secret scan before push/deploy.
+- Production startup fails closed on obvious demo/test config: Stripe test keys, `onboarding@resend.dev`, placeholder Access config, placeholder auth groups, placeholder app URL, or demo company/payment details.

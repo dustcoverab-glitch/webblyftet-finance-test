@@ -62,6 +62,16 @@ export function requireEmailConfigured(env: Env): void {
   if (!isEmailConfigured(env)) throw new PublicAppError(503, MISSING_EMAIL_MESSAGE);
 }
 
+export function isResendWebhookConfigured(env: Env): boolean {
+  return !isPlaceholder(value(env, "RESEND_WEBHOOK_SECRET"));
+}
+
+export function resendWebhookSecret(env: Env): string {
+  const secret = value(env, "RESEND_WEBHOOK_SECRET");
+  if (isPlaceholder(secret)) throw new PublicAppError(503, "Resend webhook är inte konfigurerad ännu.");
+  return secret;
+}
+
 export function resendApiKey(env: Env): string {
   requireEmailConfigured(env);
   return value(env, "RESEND_API_KEY");
@@ -121,4 +131,36 @@ export function cloudflareAccessAudience(env: Env): string {
 export function maxReceiptUploadBytes(env: Env): number {
   const configured = Number(value(env, "MAX_RECEIPT_UPLOAD_BYTES"));
   return Number.isFinite(configured) && configured > 0 ? configured : 10 * 1024 * 1024;
+}
+
+export function emailAutoSendEnabled(env: Env): boolean {
+  const raw = value(env, "ENABLE_EMAIL_AUTOSEND").toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "yes") return true;
+  if (raw === "false" || raw === "0" || raw === "no") return false;
+  return env.APP_ENV !== "local";
+}
+
+export function validateProductionGuards(env: Env): void {
+  if (env.APP_ENV !== "production") return;
+  const problems: string[] = [];
+  if (startsWith(value(env, "STRIPE_SECRET_KEY"), "sk_test_")) problems.push("Stripe test secret key");
+  if (startsWith(value(env, "STRIPE_PUBLISHABLE_KEY"), "pk_test_")) problems.push("Stripe test publishable key");
+  if (value(env, "EMAIL_FROM").toLowerCase() === "onboarding@resend.dev") problems.push("Resend onboarding sender");
+  if (value(env, "APP_BASE_URL").includes("workers.dev") || isPlaceholder(value(env, "APP_BASE_URL"))) problems.push("production base URL");
+  if (isPlaceholder(value(env, "CF_ACCESS_TEAM_DOMAIN")) || isPlaceholder(value(env, "CF_ACCESS_AUD"))) problems.push("Cloudflare Access config");
+  if (isPlaceholder(value(env, "ADMIN_EMAILS")) || isPlaceholder(value(env, "FINANCE_EMAILS"))) problems.push("authorization groups");
+  const companyFields = [
+    "WEBBLYFTET_LEGAL_NAME",
+    "WEBBLYFTET_ORG_NUMBER",
+    "WEBBLYFTET_VAT_NUMBER",
+    "WEBBLYFTET_ADDRESS1",
+    "WEBBLYFTET_BANKGIRO"
+  ];
+  for (const field of companyFields) {
+    const configured = value(env, field);
+    if (!configured || /demo|test|example|559999|000-0000/i.test(configured)) problems.push(field);
+  }
+  if (problems.length) {
+    throw new PublicAppError(500, `Production config blockerad: ${problems.join(", ")}.`);
+  }
 }
