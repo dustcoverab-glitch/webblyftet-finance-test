@@ -537,6 +537,20 @@ Release-check verifierar också migrationsordning och checksums för låsta hist
 pnpm run migrations:check
 ```
 
+### D1 0012 Preflight
+
+Om remote test-D1 fortfarande har `0012_contract_acceptance_semantics.sql`
+pending ska databasen exporteras först. Kör därefter:
+
+```bash
+pnpm run db:preflight:0012:test
+pnpm run db:migrate:test
+```
+
+Detta är en one-time remediation för D1:s transaktionella migrationskörning.
+Den håller låsta `0012` oförändrad, låter Wrangler applicera `0012`-`0016`,
+och återställer de temporärt borttagna `sales_orders`-FK:erna i `0016`.
+
 ## Kvar innan skarp test
 
 - Ersätt placeholder-D1-ID:n i `wrangler.jsonc`

@@ -13,6 +13,7 @@
     "0011_outbound_email_events.sql": "5aa04e4d32a896de4eb745dc85509b7828e6e6da905df19f122e0617f589ace3",
     "0012_contract_acceptance_semantics.sql": "371cfd4920bce0e6219f5f4590b4a8848d3977d71db03e0be31b653e35256d13",
     "0013_authorization_operational_events.sql": "e8acc50932c1851be4d52771fbbd5b56331d1d36064af61f1b721291ba461456",
-    "0014_email_lifecycle_operations.sql": "6edb0565513e9fd04f6fa5690eedc1a81f19673b74a038381a934837186f1f59"
+    "0014_email_lifecycle_operations.sql": "6edb0565513e9fd04f6fa5690eedc1a81f19673b74a038381a934837186f1f59",
+    "0015_pilot_lifecycle_credit_operations.sql": "aec57d978b8a38f2c4b9c3eea4ec5916eb4db00e93ca2634d9679075083c6426"
   }
 }

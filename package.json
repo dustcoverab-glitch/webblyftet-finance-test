@@ -13,11 +13,12 @@
     "cf-types": "wrangler types",
     "test": "WRANGLER_LOG_PATH=.wrangler/logs FORTNOX_CLIENT_ID=test-placeholder FORTNOX_CLIENT_SECRET=test-placeholder TOKEN_ENCRYPTION_KEY_BASE64=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc= STRIPE_SECRET_KEY=sk_test_placeholder STRIPE_WEBHOOK_SECRET=whsec_placeholder RESEND_API_KEY=re_placeholder RESEND_WEBHOOK_SECRET=whsec_d2ViaG9va190ZXN0X3NlY3JldA EMAIL_FROM=offers@example.test EMAIL_FROM_NAME=Webblyftet EMAIL_REPLY_TO=ekonomi@example.test ADMIN_ALERT_EMAIL=ops@example.test vitest run",
     "migrations:check": "node scripts/check-migrations.mjs",
+    "db:preflight:0012:test": "wrangler d1 execute DB --env test --remote --file scripts/0012_sales_orders_fk_preflight.sql",
     "backup:drill": "node scripts/backup-drill.mjs",
     "release:check": "pnpm run migrations:check && pnpm run typecheck && pnpm test && pnpm run build && pnpm exec wrangler deploy --env test --dry-run",
-    "db:migrate:local": "wrangler d1 migrations apply webblyftet-finance-test-local --local",
-    "db:migrate:test": "wrangler d1 migrations apply webblyftet-finance-test --remote --env test",
-    "db:migrate:production": "wrangler d1 migrations apply webblyftet-finance-production --remote --env production"
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:test": "wrangler d1 migrations apply DB --env test --remote",
+    "db:migrate:production": "wrangler d1 migrations apply DB --env production --remote"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",

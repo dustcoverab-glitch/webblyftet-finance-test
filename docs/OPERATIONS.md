@@ -97,6 +97,24 @@ Scriptet skriver ut kommandon och checklistor men exekverar inte destructive res
 3. Validera D1-tabeller, R2 receipt mappings, Stripe/Fortnox provider references och customer-order public routes.
 4. Dokumentera backup-id/exportfil, commit SHA och Worker Version ID.
 
+## D1 migration 0012 preflight
+
+Remote D1 kör Wrangler migration batches transaktionellt. Den låsta
+`0012_contract_acceptance_semantics.sql` bygger om `sales_orders`, men äldre
+testdatabaser kan redan ha beroende foreign keys från `sales_order_items`,
+`customer_order_sessions` och `contract_flows`. När `0012` fortfarande är
+pending ska detta köras en gång, efter D1-export och före vanlig migration:
+
+```bash
+pnpm run db:preflight:0012:test
+pnpm run db:migrate:test
+```
+
+Preflighten bevarar rader och tar temporärt bort endast de beroende FK:er som
+blockerar den låsta rebuilden. `0016_restore_sales_order_foreign_keys.sql`
+återställer FK:erna efter `0012`-`0015` och verifieras med
+`PRAGMA foreign_key_check`.
+
 ## Avtal och arkiv
 
 `BASIC_ACCEPTANCE` är enkel testsignering. Det arkiverbara underlaget ska vara signed snapshot + hash + terms version + signer + timestamp + provider/reference. Riktig production-signering med BankID och PDF/A-liknande långtidsarkiv är separat scope.
