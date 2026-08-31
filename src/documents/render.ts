@@ -123,6 +123,18 @@ function billingLabel(row: DocumentLine) {
   return "Engång";
 }
 
+function recurringAnnualNetMinor(rows: DocumentLine[]): number {
+  return rows
+    .filter((row) => row.billing_type === "RECURRING")
+    .reduce((sum, row) => sum + (row.billing_interval === "YEAR" ? lineNetMinor(row) : lineNetMinor(row) * 12), 0);
+}
+
+function recurringAnnualVatMinor(rows: DocumentLine[]): number {
+  return rows
+    .filter((row) => row.billing_type === "RECURRING")
+    .reduce((sum, row) => sum + (row.billing_interval === "YEAR" ? lineVatMinor(row) : lineVatMinor(row) * 12), 0);
+}
+
 function documentCss() {
   return `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#12233f;background:#eef2f8}*{box-sizing:border-box}body{margin:0}.docShell{max-width:980px;margin:0 auto;padding:28px 16px 72px}.docPage{position:relative;background:#fff;color:#12233f;min-height:1120px;margin:0 auto 28px;padding:34px 42px 56px;border:1px solid #d8e0ec;box-shadow:0 18px 60px rgba(18,35,63,.10)}.docPage:last-child{margin-bottom:0}.docTop{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:start;border-bottom:2px solid #12233f;padding-bottom:16px;margin-bottom:18px}.wordmark{display:flex;align-items:center;gap:10px;font-size:25px;font-weight:900;letter-spacing:0}.wordmark span{display:inline-grid;place-items:center;width:34px;height:34px;background:#1d4ed8;color:#fff;border-radius:3px}.docKicker,.docMetaLabel,.miniLabel{color:#51617a;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.docKind{text-align:right}.docKind h1{font-size:36px;line-height:1;margin:6px 0 0;letter-spacing:0}.docMeta{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 18px}.docMeta div,.docPanel{border-top:1px solid #cbd6e4;padding-top:10px}.docMeta strong,.docPanel strong{display:block;margin-top:4px;font-size:15px}.addresses{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:18px 0 22px}.addressText{line-height:1.38;margin:6px 0 0;color:#273957}.heroTitle{margin:12px 0 6px;font-size:23px;letter-spacing:0}.intro{font-size:14px;line-height:1.36;color:#344761;max-width:720px}.sectionTitle{font-size:16px;margin:18px 0 8px;break-after:avoid}.docTable{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}.docTable th{text-align:left;color:#51617a;font-size:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #aebbd0;padding:7px 6px}.docTable td{border-bottom:1px solid #e4e9f1;padding:8px 6px;vertical-align:top;break-inside:avoid}.docTable tr{break-inside:avoid}.docTable small{display:block;color:#607089;margin-top:3px}.number{text-align:right;white-space:nowrap}.summaryBlock{display:grid;grid-template-columns:1fr 280px;gap:20px;margin-top:18px;align-items:start}.summaryLines{border-top:2px solid #12233f;padding-top:8px}.summaryLines div{display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid #dce4ef;padding:6px 0}.summaryLines .totalLine{font-size:17px;font-weight:900;color:#0f2f67;border-bottom:2px solid #1d4ed8}.noteBlock{border-left:3px solid #1d4ed8;padding:4px 0 4px 14px;color:#344761;line-height:1.55}.scopeGrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px}.bullets{margin:8px 0 0;padding-left:18px;line-height:1.36;color:#273957}.bullets li{margin:3px 0;break-inside:avoid}.processGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 18px}.processStep{border:1px solid #d8e0ec;padding:10px;break-inside:avoid}.processStep span{display:inline-grid;place-items:center;width:22px;height:22px;background:#1d4ed8;color:#fff;font-size:12px;font-weight:900;margin-bottom:8px}.processStep p{margin:4px 0 0;color:#43536d;font-size:11px;line-height:1.34}.termsIntro{border-left:3px solid #1d4ed8;padding-left:12px;margin:4px 0 12px;color:#344761}.termsList{columns:3;column-gap:18px}.termItem{break-inside:avoid;margin:0 0 5px;padding:0 0 5px;border-bottom:1px solid #e4e9f1}.termItem h3{font-size:10.5px;margin:0 0 2px}.termItem p{font-size:8.8px;line-height:1.24;margin:0;color:#354761}.approvalGrid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:12px}.approvalGrid div{border-top:1px solid #cbd6e4;padding-top:8px;min-height:54px}.paymentBox{display:grid;grid-template-columns:1fr 220px;gap:24px;background:#f7f9fc;border:1px solid #d8e0ec;padding:14px;margin-top:18px}.paymentTotal{background:#12233f;color:#fff;padding:16px}.paymentTotal span{color:#a9c7ff}.paymentTotal strong{display:block;font-size:22px;margin-top:4px}.fine{font-size:11px;color:#607089;line-height:1.45}.docFooter{position:absolute;left:42px;right:42px;bottom:24px;display:flex;justify-content:space-between;gap:14px;border-top:1px solid #d8e0ec;padding-top:10px;color:#607089;font-size:10.5px}.acceptBlock{margin-top:20px;border:1px solid #d8e0ec;padding:14px}.acceptBlock h2{margin-top:0}.acceptBlock input{width:100%;border:1px solid #cbd6e4;padding:10px;margin:4px 0 10px}.acceptBlock button{background:#12233f;color:#fff;border:0;padding:11px 14px;font-weight:800}.check{display:block;margin:8px 0 12px}.mutedRow{color:#607089}.pageBreak{break-after:page;page-break-after:always}.noBreak{break-inside:avoid}.technicalRef{color:#607089;font-size:10px;margin-top:5px}.invoicePage{min-height:1040px}@media(max-width:760px){.docShell{padding:0;background:#fff}.docPage{min-height:auto;margin:0 0 16px;padding:24px 18px 72px;border:0;box-shadow:none}.docTop,.addresses,.summaryBlock,.paymentBox{display:block}.docKind{text-align:left;margin-top:14px}.docMeta,.scopeGrid,.processGrid,.approvalGrid{grid-template-columns:1fr}.termsList{columns:1}.docTable{font-size:12px}.docTable th:nth-child(4),.docTable td:nth-child(4),.docTable th:nth-child(6),.docTable td:nth-child(6){display:none}.number{text-align:left}.docFooter{left:18px;right:18px}}@page{size:A4;margin:16mm 14mm}@media print{body{background:#fff}.docShell{max-width:none;padding:0}.docPage{width:auto;min-height:calc(297mm - 32mm);height:auto;margin:0;padding:0 0 18mm;border:0;box-shadow:none;break-after:page;page-break-after:always}.docPage:last-child{break-after:auto;page-break-after:auto}.docFooter{left:0;right:0;bottom:0}.acceptBlock{display:none}.sectionTitle,.heroTitle{break-after:avoid}.docTable tr,.termItem,.processStep,.docPanel{break-inside:avoid}}`;
 }
@@ -291,19 +303,23 @@ export function renderOfferEmailPreview(input: OfferDocumentInput): string {
   const currency = input.currency ?? "SEK";
   const totals = documentTotals(input.rows);
   const displayNumber = humanDocumentNumber("offer", input.document_number, input.document_date);
-  return `Din offert från Webblyftet\n\nHej ${input.customer.contact_name || input.customer.name || ""},\n\nTack för ett trevligt möte. Här är en sammanfattning av lösningen vi har gått igenom.\n\nKundföretag: ${input.customer.name || "-"}\nOffert: ${displayNumber}\nGiltig till: ${input.valid_until || "-"}\nEngångskostnad: ${formatMinor(totals.oneTime.gross, currency)} inkl. moms\nÅterkommande per månad: ${formatMinor(totals.recurringMonthly.gross, currency)} inkl. moms\nÅterkommande årspris: ${formatMinor(totals.recurringAnnual.gross, currency)} inkl. moms\n\nCTA: Granska och godkänn offerten\nSekundärt: Visa fullständig offert\n\nDetta är ett Finance Test-demo-mail.`;
+  const recurringAnnualNet = recurringAnnualNetMinor(input.rows);
+  const recurringAnnualVat = recurringAnnualVatMinor(input.rows);
+  return `Din offert från Webblyftet\n\nHej ${input.customer.contact_name || input.customer.name || ""},\n\nTack för ett trevligt möte. Här är en sammanfattning av lösningen vi har gått igenom.\n\nKundföretag: ${input.customer.name || "-"}\nOffert: ${displayNumber}\nGiltig till: ${input.valid_until || "-"}\nEngångskostnad: ${formatMinor(totals.oneTime.net, currency)} exkl. moms\nMoms engång: ${formatMinor(totals.oneTime.vat, currency)}\nÅterkommande per månad: ${formatMinor(totals.recurringMonthly.net, currency)} exkl. moms\nMoms per månad: ${formatMinor(totals.recurringMonthly.vat, currency)}\nÅterkommande årspris: ${formatMinor(recurringAnnualNet, currency)} exkl. moms\nMoms per år: ${formatMinor(recurringAnnualVat, currency)}\n\nCTA: Granska och godkänn offerten\nSekundärt: Visa fullständig offert\n\nDetta är ett Finance Test-demo-mail.`;
 }
 
 export function renderOfferEmail(input: OfferDocumentInput, customerOrderUrl: string): { subject: string; html: string; text: string } {
   const company = input.company ?? webblyftetCompanyProfile({} as Env);
   const currency = input.currency ?? "SEK";
   const totals = documentTotals(input.rows);
+  const recurringAnnualNet = recurringAnnualNetMinor(input.rows);
+  const recurringAnnualVat = recurringAnnualVatMinor(input.rows);
   const displayNumber = humanDocumentNumber("offer", input.document_number, input.document_date);
   const contact = input.customer.contact_name || input.customer.name || "";
   const subject = `Din offert från ${company.brand_name}: ${input.title || displayNumber}`;
   const rowSummary = input.rows.map((row) => `<tr>
     <td style="padding:10px 0;border-bottom:1px solid #e2e8f0"><strong>${escapeHtml(row.description)}</strong><br><span style="color:#51617a">${escapeHtml(row.billing_type === "RECURRING" ? "Återkommande" : "Engång")} · ${escapeHtml(String(row.quantity))} ${escapeHtml(row.unit || "st")}</span></td>
-    <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right"><strong>${formatMinor(lineGrossMinor(row), currency)}</strong></td>
+    <td style="padding:10px 0;border-bottom:1px solid #e2e8f0;text-align:right"><strong>${formatMinor(lineNetMinor(row), currency)}</strong><br><span style="color:#51617a">exkl. moms · moms ${formatMinor(lineVatMinor(row), currency)}</span></td>
   </tr>`).join("");
   const html = `<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
   <body style="margin:0;background:#eef2f8;color:#12233f;font-family:Inter,Arial,sans-serif">
@@ -319,9 +335,12 @@ export function renderOfferEmail(input: OfferDocumentInput, customerOrderUrl: st
         </table>
         <table style="width:100%;border-collapse:collapse">${rowSummary || `<tr><td>Inga rader.</td></tr>`}</table>
         <section style="margin:22px 0;padding:16px;background:#f7f9fc;border-left:3px solid #1d4ed8">
-          <div>Engångskostnad inkl. moms: <strong>${formatMinor(totals.oneTime.gross, currency)}</strong></div>
-          <div>Återkommande per månad inkl. moms: <strong>${formatMinor(totals.recurringMonthly.gross, currency)}</strong></div>
-          <div>Återkommande årspris inkl. moms: <strong>${formatMinor(totals.recurringAnnual.gross, currency)}</strong></div>
+          <div>Engångskostnad exkl. moms: <strong>${formatMinor(totals.oneTime.net, currency)}</strong></div>
+          <div style="color:#51617a;font-size:13px">Moms engång: <strong>${formatMinor(totals.oneTime.vat, currency)}</strong></div>
+          <div style="margin-top:8px">Återkommande per månad exkl. moms: <strong>${formatMinor(totals.recurringMonthly.net, currency)}</strong></div>
+          <div style="color:#51617a;font-size:13px">Moms per månad: <strong>${formatMinor(totals.recurringMonthly.vat, currency)}</strong></div>
+          <div style="margin-top:8px">Återkommande årspris exkl. moms: <strong>${formatMinor(recurringAnnualNet, currency)}</strong></div>
+          <div style="color:#51617a;font-size:13px">Moms per år: <strong>${formatMinor(recurringAnnualVat, currency)}</strong></div>
         </section>
         <p><a href="${escapeHtml(customerOrderUrl)}" style="display:inline-block;background:#12233f;color:#fff;text-decoration:none;border-radius:3px;padding:12px 16px;font-weight:800">Granska och godkänn offerten</a></p>
         <p style="color:#51617a;font-size:13px;line-height:1.5">Detta är ett testmail från Finance Test. Om knappen inte fungerar kan du kopiera länken: ${escapeHtml(customerOrderUrl)}</p>
@@ -337,9 +356,12 @@ export function renderOfferEmail(input: OfferDocumentInput, customerOrderUrl: st
     `Offert: ${displayNumber}`,
     `Offertdatum: ${input.document_date}`,
     `Giltig till: ${input.valid_until || "-"}`,
-    `Engångskostnad: ${formatMinor(totals.oneTime.gross, currency)} inkl. moms`,
-    `Återkommande per månad: ${formatMinor(totals.recurringMonthly.gross, currency)} inkl. moms`,
-    `Återkommande årspris: ${formatMinor(totals.recurringAnnual.gross, currency)} inkl. moms`,
+    `Engångskostnad: ${formatMinor(totals.oneTime.net, currency)} exkl. moms`,
+    `Moms engång: ${formatMinor(totals.oneTime.vat, currency)}`,
+    `Återkommande per månad: ${formatMinor(totals.recurringMonthly.net, currency)} exkl. moms`,
+    `Moms per månad: ${formatMinor(totals.recurringMonthly.vat, currency)}`,
+    `Återkommande årspris: ${formatMinor(recurringAnnualNet, currency)} exkl. moms`,
+    `Moms per år: ${formatMinor(recurringAnnualVat, currency)}`,
     "",
     "Granska och godkänn offerten:",
     customerOrderUrl

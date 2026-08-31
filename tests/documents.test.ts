@@ -9,6 +9,7 @@ import {
   humanDocumentNumber,
   renderInvoiceDocument,
   renderOfferDocument,
+  renderOfferEmail,
   renderOfferEmailPreview
 } from "../src/documents";
 import { resetTables, workerEnv } from "./helpers";
@@ -52,9 +53,40 @@ describe("Webblyftet document system", () => {
       customer: { name: "Anderssons Bygg AB", contact_name: "Anders" },
       rows: [{ description: "Webblyftet Service", quantity: 1, unit_price_minor: 29500, vat_percent: 25, billing_type: "RECURRING", billing_interval: "MONTH" }]
     });
+    const normalizedBody = body.replace(/\u00a0/g, " ");
     expect(body).toContain("Din offert från Webblyftet");
     expect(body).toContain("Anderssons Bygg AB");
+    expect(normalizedBody).toContain("Återkommande per månad: 295 kr exkl. moms");
+    expect(normalizedBody).toContain("Moms per månad: 74 kr");
+    expect(normalizedBody).not.toContain("Återkommande per månad: 369 kr inkl. moms");
     expect(body).toContain("CTA: Granska och godkänn offerten");
+  });
+
+  it("renders offer emails with ex VAT prices as the primary customer amounts", () => {
+    const message = renderOfferEmail({
+      document_number: "OFF-2026-002",
+      title: "Webblyftet Bas och Service",
+      document_date: "2026-08-31",
+      valid_until: "2026-09-14",
+      customer: { name: "Anderssons Bygg AB", contact_name: "Anders" },
+      rows: [
+        { description: "Webblyftet Bas", quantity: 1, unit_price_minor: 799500, vat_percent: 25, billing_type: "ONE_TIME" },
+        { description: "Webblyftet Service", quantity: 1, unit_price_minor: 29500, vat_percent: 25, billing_type: "RECURRING", billing_interval: "MONTH" }
+      ]
+    }, "https://example.test/customer-order/token");
+    const normalizedHtml = message.html.replace(/\u00a0/g, " ");
+    const normalizedText = message.text.replace(/\u00a0/g, " ");
+
+    expect(message.html).toContain("Engångskostnad exkl. moms");
+    expect(normalizedHtml).toContain("7 995 kr");
+    expect(message.html).toContain("Återkommande per månad exkl. moms");
+    expect(normalizedHtml).toContain("295 kr");
+    expect(message.html).toContain("Moms per månad");
+    expect(message.html).not.toContain("Engångskostnad inkl. moms");
+    expect(normalizedHtml).not.toContain("9 994 kr");
+    expect(normalizedText).toContain("Engångskostnad: 7 995 kr exkl. moms");
+    expect(normalizedText).toContain("Återkommande per månad: 295 kr exkl. moms");
+    expect(normalizedText).not.toContain("inkl. moms");
   });
 
   it("renders invoice payment information without leaking production bank data", () => {
