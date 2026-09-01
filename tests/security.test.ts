@@ -59,6 +59,74 @@ describe("API health and Access middleware", () => {
     await expect(response.json()).resolves.toMatchObject({ code: "ACCESS_JWT_INVALID" });
   });
 
+  it("maps Worker-level Access identity to the configured Finance role", async () => {
+    const { token, jwks } = await createAccessJwt("test-aud", { email: null });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(jwks), { status: 200 }));
+    const executionCtx = {
+      ...createExecutionContext(),
+      access: {
+        getIdentity: vi.fn().mockResolvedValue({ email: "admin@example.test" })
+      }
+    } as any;
+
+    const response = await worker.fetch(
+      new Request("https://finance-test.example/api/contract-flows/simulate", {
+        method: "POST",
+        headers: {
+          origin: "https://finance-test.example",
+          "cf-access-jwt-assertion": token
+        }
+      }),
+      workerEnv({
+        APP_ENV: "test",
+        REQUIRE_CLOUDFLARE_ACCESS: "true",
+        ADMIN_EMAILS: "admin@example.test"
+      } as any),
+      executionCtx
+    );
+
+    expect(response.status).toBe(201);
+  });
+
+  it("maps the Access identity endpoint email to the configured Finance role", async () => {
+    const { token, jwks } = await createAccessJwt("test-aud", { email: null });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/cdn-cgi/access/certs")) {
+        return new Response(JSON.stringify(jwks), { status: 200 });
+      }
+      if (url.endsWith("/cdn-cgi/access/get-identity")) {
+        return new Response(JSON.stringify({ email: "admin@example.test" }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const response = await worker.fetch(
+      new Request("https://finance-test.example/api/contract-flows/simulate", {
+        method: "POST",
+        headers: {
+          cookie: "other=value; CF_Authorization=verified-app-token",
+          origin: "https://finance-test.example",
+          "cf-access-authenticated-user-email": "spoofed@example.test",
+          "cf-access-jwt-assertion": token
+        }
+      }),
+      workerEnv({
+        APP_ENV: "test",
+        CF_ACCESS_TEAM_DOMAIN: "team.example.cloudflareaccess.com",
+        REQUIRE_CLOUDFLARE_ACCESS: "true",
+        ADMIN_EMAILS: "admin@example.test"
+      } as any),
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(201);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://team.example.cloudflareaccess.com/cdn-cgi/access/get-identity",
+      { headers: { cookie: "CF_Authorization=verified-app-token" } }
+    );
+  });
+
   it("can explicitly allow an initial workers.dev test deployment without Access", async () => {
     const response = await worker.fetch(
       new Request("https://finance-test.example/api/health"),
@@ -235,7 +303,7 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function createAccessJwt(aud: string) {
+async function createAccessJwt(aud: string, options: { email?: string | null } = {}) {
   const keyPair = await crypto.subtle.generateKey(
     {
       name: "RSASSA-PKCS1-v1_5",
@@ -251,11 +319,12 @@ async function createAccessJwt(aud: string) {
   publicJwk.alg = "RS256";
   publicJwk.use = "sig";
   const header = base64Url(new TextEncoder().encode(JSON.stringify({ alg: "RS256", kid: "test-key" })));
-  const payload = base64Url(new TextEncoder().encode(JSON.stringify({
+  const payloadData: Record<string, unknown> = {
     aud,
-    email: "tester@example.com",
     exp: Math.floor(Date.now() / 1000) + 300
-  })));
+  };
+  if (options.email !== null) payloadData.email = options.email ?? "tester@example.com";
+  const payload = base64Url(new TextEncoder().encode(JSON.stringify(payloadData)));
   const signature = await crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5",
     keyPair.privateKey,

@@ -244,7 +244,33 @@ function Status({ value }: { value: string }) {
   const good = ["SYNCED","PAID","ACCEPTED","CONNECTED","ACTIVE","SUCCEEDED","OK","READY","EXPORTED"].includes(normalized);
   const warning = ["DRAFT","PENDING","LOCAL_ONLY","WAITING","UNPAID","INCOMPLETE","REQUIRES_ACTION"].includes(normalized);
   const danger = ["FAILED","ERROR","OVERDUE","PAST_DUE","CANCELLED","CREDITED","NOT CONFIGURED"].includes(normalized);
-  return <span className={`status ${good ? "good" : ""} ${warning ? "warning" : ""} ${danger ? "dangerStatus" : ""}`}>{value || "UNKNOWN"}</span>;
+  const labels: Record<string, string> = {
+    ACCEPTED: "Accepterad",
+    ACTIVE: "Aktiv",
+    CANCELLED: "Avslutad",
+    CONNECTED: "Ansluten",
+    CREDITED: "Krediterad",
+    DRAFT: "Utkast",
+    ERROR: "Fel",
+    EXPORTED: "Exporterad",
+    FAILED: "Misslyckad",
+    INCOMPLETE: "Ej klar",
+    LOCAL_ONLY: "Endast lokalt",
+    "NOT CONFIGURED": "Ej konfigurerad",
+    OK: "OK",
+    OVERDUE: "Förfallen",
+    PAID: "Betald",
+    PAST_DUE: "Förfallen",
+    PENDING: "Väntar",
+    READY: "Klar",
+    REQUIRES_ACTION: "Kräver åtgärd",
+    SENT: "Skickad",
+    SUCCEEDED: "Lyckad",
+    SYNCED: "Synkad",
+    UNPAID: "Obetald",
+    WAITING: "Väntar"
+  };
+  return <span className={`status ${good ? "good" : ""} ${warning ? "warning" : ""} ${danger ? "dangerStatus" : ""}`}>{labels[normalized] ?? (value || "Okänd")}</span>;
 }
 
 function displayDate(value?: string | null) {
@@ -254,6 +280,15 @@ function displayDate(value?: string | null) {
 function displayDateTime(value?: string | null) {
   if (!value) return "—";
   return value.replace("T", " ").slice(0, 16);
+}
+
+function safeJson(value: unknown, fallback: any) {
+  if (!value || typeof value !== "string") return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function invoiceLabel(invoice: Partial<Invoice>) {
@@ -333,15 +368,15 @@ function MiniTrend({ invoices = [], payments = [] }: { invoices?: any[]; payment
   }));
   const max = Math.max(1, ...points.flatMap((point) => [point.invoiced, point.paid]));
   return <div className="trendPanel">
-    <div className="panelHead"><div><h3>Ekonomiöversikt</h3><p>Fakturerat och betalt senaste 6 månaderna</p></div><span>SEK</span></div>
-    <div className="trendBars">{points.map((point) => <div className="trendMonth" key={point.month} title={`${monthLabel(point.month)}: fakturerat ${moneyMinor(point.invoiced)}, betalt ${moneyMinor(point.paid)}`}>
+    <div className="panelHead"><div><h3>Ekonomiöversikt</h3><p>Fakturerat exkl. moms och betalt senaste 6 månaderna</p></div><span>SEK</span></div>
+    <div className="trendBars">{points.map((point) => <div className="trendMonth" key={point.month} title={`${monthLabel(point.month)}: fakturerat exkl. moms ${moneyMinor(point.invoiced)}, betalt ${moneyMinor(point.paid)}`}>
       <div className="trendStack">
         <span className="bar invoiced" style={{ height: `${Math.max(4, point.invoiced / max * 100)}%` }} />
         <span className="bar paid" style={{ height: `${Math.max(4, point.paid / max * 100)}%` }} />
       </div>
       <small>{monthLabel(point.month)}</small>
     </div>)}</div>
-    <div className="legend"><span><i className="legendInvoiced"/>Fakturerat</span><span><i className="legendPaid"/>Betalt</span></div>
+    <div className="legend"><span><i className="legendInvoiced"/>Fakturerat exkl. moms</span><span><i className="legendPaid"/>Betalt</span></div>
   </div>;
 }
 
@@ -397,6 +432,11 @@ function Dashboard() {
   const pastDue = Number(statusCounts.get("PAST_DUE") ?? 0);
   const canceling = Number(data.subscriptions?.cancel_at_period_end ?? 0);
   const subscriptionTotal = Math.max(1, active + pending + pastDue + canceling);
+  const projectVat = Number(data.projectInvoices?.vat_minor ?? 0);
+  const outstandingVatEstimate = Math.max(0, Number(data.invoices?.vat_minor ?? 0));
+  const recurringVatEstimate = Math.round(Number(data.subscriptions?.mrr_minor ?? 0) * 0.25);
+  const websiteMonthVat = Number(data.websiteSalesMonth?.vat_minor ?? 0);
+  const acceptedVat = Number(data.offers?.accepted_vat_minor ?? 0);
   const attention = [
     ...(data.attention?.invoices ?? []).map((item:any) => ({
       id: `invoice-${item.id}`,
@@ -428,7 +468,7 @@ function Dashboard() {
     })),
     ...groupSyncAttention(data.attention?.sync ?? [])
   ].slice(0, 8);
-  const recentActivity = <Card><div className="panelHead"><div><h3>Senaste aktivitet</h3><p>Business, audit och ekonomihändelser</p></div></div>
+  const recentActivity = <Card><div className="panelHead"><div><h3>Senaste aktivitet</h3><p>Affärsflöden, audit och ekonomihändelser</p></div></div>
     <div className="activityList">
       {(data.audit ?? []).slice(0, 8).map((item:any) => {
         const to = activityTarget(item);
@@ -439,7 +479,7 @@ function Dashboard() {
     </div>
   </Card>;
   return <>
-    <PageHead title="Översikt" eyebrow="Finance Control Center" subtitle="Operativ testöversikt för kundfordringar, fakturering och abonnemang."
+    <PageHead title="Översikt" eyebrow="Ekonomikontroll" subtitle="Operativ översikt med intäkter exkl. moms som huvudtal och moms synlig vid sidan."
       action={<div className="quickActions"><Link to="/customers" className="button ghost small"><Users size={14}/>Ny kund</Link><Link to="/offers" className="button ghost small"><FileCheck2 size={14}/>Ny offert</Link><Link to="/invoices" className="button ghost small">Fakturor</Link><Link to="/subscriptions" className="button ghost small">Abonnemang</Link></div>} />
     <div className="integrationStrip compact">
       <div><span>Stripe</span><Status value={data.stripe?.configured ? "CONNECTED" : "NOT CONFIGURED"}/></div>
@@ -447,26 +487,19 @@ function Dashboard() {
       <div><span>Senaste sync</span><strong>{displayDateTime(data.logs?.[0]?.created_at)}</strong></div>
       <div><span>D1/R2</span><Status value="OK"/></div>
     </div>
-    <div className="metricGrid">
-      <Metric label="Fakturerat projektvärde" value={money(data.projectInvoices?.value)} hint={`${data.projectInvoices?.count ?? 0} projektfakturor`} to="/invoices?filter=project" />
-      <Metric label="Utestående kundfordringar" value={moneyMinor(data.receivables?.outstanding_minor)} hint={`${data.receivables?.unpaid_count ?? 0} obetalda`} to="/invoices?filter=outstanding" />
-      <Metric label="Aktiv MRR" value={moneyMinor(data.subscriptions?.mrr_minor)} hint={`ARR ${moneyMinor((data.subscriptions?.mrr_minor ?? 0) * 12)}`} to="/subscriptions" />
-      <Metric label="Aktiva abonnemang" value={active} hint={`${pending} pending · ${pastDue} past due`} to="/subscriptions" />
-      <Metric label="Obetalda/förfallna" value={data.receivables?.overdue_count ?? 0} hint={`${failedOrPastDue} failed/past due payments`} to="/invoices?filter=overdue" />
-      <Metric label="Accepterad pipeline" value={money(data.offers?.accepted_value)} hint={`${data.offers?.count ?? 0} offerter totalt`} to="/offers" />
-    </div>
-    <div className="dashboardFocusGrid">
-      <Card className="attentionCard">
-        <div className="panelHead"><div><h3>Kräver uppmärksamhet</h3><p>Prioriterade avvikelser i testmiljön</p></div>{attention.length ? <CircleAlert size={18}/> : <CheckCircle2 size={18}/>}</div>
-        {attention.length ? <div className="attentionList">{attention.map((item:any) =>
-          <Link key={item.id} to={item.to} className="attentionRow"><div><strong>{item.title}</strong><small>{item.meta}</small></div><Status value={item.status}/></Link>
-        )}</div> : <div className="goodState"><CheckCircle2 size={18}/><span>Inga akuta avvikelser i testmiljön</span></div>}
-      </Card>
-      {recentActivity}
+    <div className="metricGrid dashboardStatsGrid">
+      <Metric label="Fakturerat projektvärde" value={moneyMinor(data.projectInvoices?.net_minor)} hint={`exkl. moms · moms ${moneyMinor(projectVat)} · ${data.projectInvoices?.count ?? 0} fakturor`} to="/invoices?filter=project" />
+      <Metric label="Sålda hemsidor denna månad" value={moneyMinor(data.websiteSalesMonth?.net_minor)} hint={`exkl. moms · moms ${moneyMinor(websiteMonthVat)} · ${data.websiteSalesMonth?.count ?? 0} affärer`} to="/invoices?filter=project" />
+      <Metric label="Utestående kundfordringar" value={moneyMinor(data.receivables?.outstanding_minor)} hint={`saldo inkl. moms · moms i fakturor ${moneyMinor(outstandingVatEstimate)}`} to="/invoices?filter=outstanding" />
+      <Metric label="Aktiv MRR" value={moneyMinor(data.subscriptions?.mrr_minor)} hint={`exkl. moms · moms ca ${moneyMinor(recurringVatEstimate)}`} to="/subscriptions" />
+      <Metric label="ARR" value={moneyMinor((data.subscriptions?.mrr_minor ?? 0) * 12)} hint="årlig motsvarighet exkl. moms" to="/subscriptions" />
+      <Metric label="Aktiva abonnemang" value={active} hint={`${pending} väntar · ${pastDue} förfallna`} to="/subscriptions" />
+      <Metric label="Accepterad pipeline" value={moneyMinor(data.offers?.accepted_net_minor)} hint={`exkl. moms · moms ${moneyMinor(acceptedVat)} · ${data.offers?.count ?? 0} offerter`} to="/offers" />
+      <Metric label="Förfallna ärenden" value={data.receivables?.overdue_count ?? 0} hint={`${failedOrPastDue} misslyckade/förfallna betalningar`} to="/invoices?filter=overdue" />
     </div>
     <div className="controlGrid">
       <Card><MiniTrend invoices={data.trend?.invoices} payments={data.trend?.payments}/></Card>
-      <Card><div className="panelHead"><div><h3>Kundfordringar</h3><p>Cash och receivables</p></div><Clock3 size={18}/></div>
+      <Card><div className="panelHead"><div><h3>Kundfordringar</h3><p>Saldo och kommande betalningar</p></div><Clock3 size={18}/></div>
         <div className="cashGrid">
           <Link to="/invoices?filter=outstanding"><span>Totalt utestående</span><strong>{moneyMinor(data.receivables?.outstanding_minor)}</strong></Link>
           <Link to="/invoices?filter=due-soon"><span>Förfaller inom 7 dagar</span><strong>{moneyMinor(data.receivables?.due_soon_minor)}</strong></Link>
@@ -474,19 +507,19 @@ function Dashboard() {
           <div><span>Betalt senaste 30 dagar</span><strong>{moneyMinor(data.receivables?.paid_30d_minor)}</strong></div>
         </div>
       </Card>
-      <Card><div className="panelHead"><div><h3>Subscription Pulse</h3><p>Statusfördelning och MRR</p></div><Repeat size={18}/></div>
+      <Card><div className="panelHead"><div><h3>Abonnemangsstatus</h3><p>Statusfördelning och MRR</p></div><Repeat size={18}/></div>
         <div className="pulseBar">
-          <Link to="/subscriptions?filter=active" className="pulse active" style={{ flexGrow: Math.max(1, active) }} title={`Active ${active}`}/>
-          <Link to="/subscriptions?filter=pending" className="pulse pending" style={{ flexGrow: Math.max(1, pending) }} title={`Pending ${pending}`}/>
-          <Link to="/subscriptions?filter=past_due" className="pulse dangerPulse" style={{ flexGrow: Math.max(1, pastDue) }} title={`Past due ${pastDue}`}/>
+          <Link to="/subscriptions?filter=active" className="pulse active" style={{ flexGrow: Math.max(1, active) }} title={`Aktiva ${active}`}/>
+          <Link to="/subscriptions?filter=pending" className="pulse pending" style={{ flexGrow: Math.max(1, pending) }} title={`Väntar ${pending}`}/>
+          <Link to="/subscriptions?filter=past_due" className="pulse dangerPulse" style={{ flexGrow: Math.max(1, pastDue) }} title={`Förfallna ${pastDue}`}/>
         </div>
         <div className="pulseStats">
-          <Link to="/subscriptions?filter=active"><span>Active</span><strong>{active}</strong></Link>
-          <Link to="/subscriptions?filter=pending"><span>Pending</span><strong>{pending}</strong></Link>
-          <Link to="/subscriptions?filter=past_due"><span>Past due</span><strong>{pastDue}</strong></Link>
-          <div><span>MRR</span><strong>{moneyMinor(data.subscriptions?.mrr_minor)}</strong></div>
+          <Link to="/subscriptions?filter=active"><span>Aktiva</span><strong>{active}</strong></Link>
+          <Link to="/subscriptions?filter=pending"><span>Väntar</span><strong>{pending}</strong></Link>
+          <Link to="/subscriptions?filter=past_due"><span>Förfallna</span><strong>{pastDue}</strong></Link>
+          <div><span>MRR exkl. moms</span><strong>{moneyMinor(data.subscriptions?.mrr_minor)}</strong></div>
         </div>
-        <p className="muted">{canceling} avslutas vid periodslut · fördelning viktad på {subscriptionTotal} subscriptions.</p>
+        <p className="muted">{canceling} avslutas vid periodslut · fördelning viktad på {subscriptionTotal} abonnemang.</p>
       </Card>
       <Card><div className="panelHead"><div><h3>Ekonomiska events</h3><p>Senaste accounting-ready händelserna</p></div><BookOpen size={18}/></div>
         <div className="activityList">
@@ -496,6 +529,15 @@ function Dashboard() {
           {!data.events?.length && <EmptyState title="Inga accounting events" text="Finance Core skapar händelser när fakturor och betalningar uppstår." />}
         </div>
       </Card>
+    </div>
+    <div className="dashboardFocusGrid dashboardLowerGrid">
+      <Card className="attentionCard">
+        <div className="panelHead"><div><h3>Kräver uppmärksamhet</h3><p>Avvikelser och sync-fel, samlade längre ner i vyn</p></div>{attention.length ? <CircleAlert size={18}/> : <CheckCircle2 size={18}/>}</div>
+        {attention.length ? <div className="attentionList">{attention.map((item:any) =>
+          <Link key={item.id} to={item.to} className="attentionRow"><div><strong>{item.title}</strong><small>{item.meta}</small></div><Status value={item.status}/></Link>
+        )}</div> : <div className="goodState"><CheckCircle2 size={18}/><span>Inga akuta avvikelser i testmiljön</span></div>}
+      </Card>
+      {recentActivity}
     </div>
   </>;
 }
@@ -860,9 +902,17 @@ function editorRowsToPayload(rows: OfferEditorRow[]) {
 
 function ContractFlowNew() {
   const navigate = useNavigate();
+  const [flows, setFlows] = useState<any[]>([]);
+  const [loadingFlows, setLoadingFlows] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  async function simulate() {
+  useEffect(() => {
+    api<any[]>("/api/contract-flows")
+      .then(setFlows)
+      .catch(() => setFlows([]))
+      .finally(() => setLoadingFlows(false));
+  }, []);
+  async function startSales() {
     setBusy(true); setError("");
     try {
       const flow:any = await post("/api/contract-flows/simulate");
@@ -873,21 +923,61 @@ function ContractFlowNew() {
       setBusy(false);
     }
   }
+  const activeFlows = flows.filter((flow) => !["COMPLETED", "CANCELLED"].includes(String(flow.status ?? "").toUpperCase()));
+  const waitingForCustomer = activeFlows.filter((flow) => ["CUSTOMER_LINK_CREATED", "OFFER_SENT", "CUSTOMER_OPENED"].includes(String(flow.status ?? "").toUpperCase())).length;
+  const signedFlows = activeFlows.filter((flow) => ["SIGNED", "ACCEPTED", "SALES_ORDER_CONFIRMED", "PAYMENT_METHOD_ADDED", "ACTIVATING"].includes(String(flow.status ?? "").toUpperCase())).length;
+  const completedFlows = flows.filter((flow) => String(flow.status ?? "").toUpperCase() === "COMPLETED").length;
+  const recentFlows = activeFlows.slice(0, 8);
   return <>
-    <PageHead title="Avtalskedja" subtitle="Simulerad handoff från säljmöte till kundlänk, signering och subscription."
-      action={<button onClick={simulate} disabled={busy}><BadgeCheck size={16}/>Simulera säljmöte</button>} />
+    <PageHead title="Avtalskedja" subtitle="Starta nya kundavtal och följ offert, kundlänk, signering, betalmetod och faktura i samma flöde."
+      action={<button onClick={startSales} disabled={busy}><BadgeCheck size={16}/>{busy ? "Startar..." : "Starta sälj"}</button>} />
     {error && <ErrorNotice message={error}/>}
     <div className="contractHero">
       <div>
-        <span className="eyebrow">Sales closing workspace</span>
-        <h2>Kunden säger ja. Säljaren startar kedjan.</h2>
-        <p>Den här interna vyn simulerar exakt det handoff-kontrakt som stora portalen senare kan skicka, men utan extern integration ännu.</p>
+        <span className="eyebrow">Säljstart</span>
+        <h2>Starta ett nytt avtal och håll koll på vägen till klar affär.</h2>
+        <p>Här samlas pågående kundavtal, nästa steg och status för de affärer som väntar på kund, signering, betalning eller intern uppföljning.</p>
       </div>
-      <div className="flowPreview">
-        <Status value="INTERNAL"/>
-        <strong>Anderssons Bygg AB</strong>
-        <small>Webblyftet Bas + Webblyftet Service</small>
+      <div className="flowPreview contractStartStats">
+        <div><span>Pågående avtal</span><strong>{activeFlows.length}</strong></div>
+        <div><span>Väntar på kund</span><strong>{waitingForCustomer}</strong></div>
+        <div><span>Signerade i arbete</span><strong>{signedFlows}</strong></div>
+        <div><span>Klara</span><strong>{completedFlows}</strong></div>
       </div>
+    </div>
+    <div className="contractStartGrid">
+      <Card>
+        <div className="panelHead">
+          <div><h3>Pågående avtal</h3><p>Affärer som fortfarande har något kvar innan de är helt klara.</p></div>
+        </div>
+        <div className="contractFlowList">
+          {loadingFlows && <EmptyState title="Hämtar avtal" text="Laddar pågående avtalskedjor." />}
+          {!loadingFlows && !recentFlows.length && <EmptyState title="Inga pågående avtal" text="Starta sälj när en ny kund ska få offert, villkor och kundlänk." />}
+          {recentFlows.map((flow) => {
+            const draft = safeJson(flow.draft_json, {});
+            const customerName = flow.customer_name || draft?.company?.name || "Ej namngiven kund";
+            const contactEmail = flow.customer_email || draft?.contact?.email || "Ingen e-post";
+            return <Link className="contractFlowItem" to={`/contract-flow/${flow.id}`} key={flow.id}>
+              <span>
+                <strong>{customerName}</strong>
+                <small>{contactEmail} · uppdaterad {displayDateTime(flow.updated_at || flow.created_at)}</small>
+              </span>
+              <Status value={flow.status}/>
+            </Link>;
+          })}
+        </div>
+      </Card>
+      <Card>
+        <div className="panelHead">
+          <div><h3>Nästa steg</h3><p>Snabb överblick innan du startar eller återupptar ett avtal.</p></div>
+        </div>
+        <div className="contractChecklist">
+          <div><FileText size={16}/><span><strong>Offert och rader</strong><small>Kontrollera engångsposter, abonnemang, rabatt och moms.</small></span></div>
+          <div><Users size={16}/><span><strong>Kund och kontakt</strong><small>Företagsuppgifter och mottagarens e-post används i kundlänken.</small></span></div>
+          <div><BadgeCheck size={16}/><span><strong>Signering och betalning</strong><small>Kunden granskar, signerar och lägger kort när återkommande kostnad finns.</small></span></div>
+          <div><ReceiptText size={16}/><span><strong>Faktura</strong><small>Engångsdelen följs upp som intern faktura och kan synkas vidare.</small></span></div>
+        </div>
+      </Card>
     </div>
   </>;
 }
@@ -928,7 +1018,7 @@ function ContractFlowWorkspace() {
     setRows((current) => hydrateFlowRows(current, priceOptions));
   }, [priceOptions, rows.length]);
   if (error) return <ErrorNotice message={error}/>;
-  if (!flow) return <EmptyState title="Hämtar avtalskedja" text="Laddar säljmötet, kund och affärsrader." />;
+  if (!flow) return <EmptyState title="Hämtar avtalskedja" text="Laddar kund, offert och affärsrader." />;
   const frozen = Boolean(flow.customer_order_session_id);
   const missing = flow.missing ?? [];
   function updateRow(rowId: string, patch: Partial<OfferEditorRow>) {
@@ -1021,8 +1111,8 @@ function ContractFlowWorkspace() {
     ["Affären klar", flow.status === "COMPLETED"]
   ] as const;
   return <>
-    <PageHead title="Avtalskedja" subtitle={`${flow.seller_name || "Säljare"} · ${flow.meeting_id || "Simulerat möte"}`}
-      action={<div className="actions"><Link className="button ghost" to="/contract-flow/new">Ny simulering</Link>{!frozen && <button onClick={createLink} disabled={saving}>Skapa kundlänk</button>}</div>} />
+    <PageHead title="Avtalskedja" subtitle={`${flow.seller_name || "Säljare"} · ${flow.meeting_id || "Säljflöde"}`}
+      action={<div className="actions"><Link className="button ghost" to="/contract-flow/new">Starta nytt säljflöde</Link>{!frozen && <button onClick={createLink} disabled={saving}>Skapa kundlänk</button>}</div>} />
     <div className="contractWorkspace">
       <section className="contractMain">
         {missing.length > 0 && !frozen && <div className="missingBanner"><strong>{missing.length} uppgifter behöver kompletteras</strong>{missing.map((m:any)=><a key={m.field} href={`#${m.field.replace(".", "-")}`}>{m.label}</a>)}</div>}

@@ -155,24 +155,56 @@ app.get("/api/dashboard", requirePermission("bookkeeping.read"), async (c) => {
     attentionSync,
     receipts,
     logs,
-    connection
+    connection,
+    websiteSalesMonth
   ] = await Promise.all([
     one<{ count: number }>(c.env.DB, "SELECT COUNT(*) count FROM customers"),
-    one<{ count: number; value: number; accepted_value: number }>(
+    one<{ count: number; value: number; accepted_value: number; net_minor: number; vat_minor: number; accepted_net_minor: number; accepted_vat_minor: number }>(
       c.env.DB,
-      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value, COALESCE(SUM(CASE WHEN status='ACCEPTED' THEN total ELSE 0 END),0) accepted_value FROM offers"
+      `SELECT
+        COUNT(*) count,
+        COALESCE(SUM(total),0) value,
+        COALESCE(SUM(CASE WHEN status='ACCEPTED' THEN total ELSE 0 END),0) accepted_value,
+        COALESCE(SUM(ROUND(subtotal * 100)),0) net_minor,
+        COALESCE(SUM(ROUND(vat_total * 100)),0) vat_minor,
+        COALESCE(SUM(CASE WHEN status='ACCEPTED' THEN ROUND(subtotal * 100) ELSE 0 END),0) accepted_net_minor,
+        COALESCE(SUM(CASE WHEN status='ACCEPTED' THEN ROUND(vat_total * 100) ELSE 0 END),0) accepted_vat_minor
+       FROM offers`
     ),
-    one<{ count: number; value: number; outstanding: number }>(
+    one<{ count: number; value: number; outstanding: number; net_minor: number; vat_minor: number; gross_minor: number; outstanding_minor: number }>(
       c.env.DB,
-      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value, COALESCE(SUM(COALESCE(balance,total)),0) outstanding FROM invoices WHERE cancelled=0"
+      `SELECT
+        COUNT(*) count,
+        COALESCE(SUM(total),0) value,
+        COALESCE(SUM(COALESCE(balance,total)),0) outstanding,
+        COALESCE(SUM(COALESCE(subtotal_minor, ROUND(subtotal * 100))),0) net_minor,
+        COALESCE(SUM(COALESCE(vat_total_minor, ROUND(vat_total * 100))),0) vat_minor,
+        COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) gross_minor,
+        COALESCE(SUM(COALESCE(balance_minor, ROUND(COALESCE(balance,total) * 100))),0) outstanding_minor
+       FROM invoices
+       WHERE cancelled=0`
     ),
-    one<{ count: number; value: number }>(
+    one<{ count: number; value: number; net_minor: number; vat_minor: number; gross_minor: number }>(
       c.env.DB,
-      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value FROM invoices WHERE cancelled=0 AND invoice_type='PROJECT_INVOICE'"
+      `SELECT
+        COUNT(*) count,
+        COALESCE(SUM(total),0) value,
+        COALESCE(SUM(COALESCE(subtotal_minor, ROUND(subtotal * 100))),0) net_minor,
+        COALESCE(SUM(COALESCE(vat_total_minor, ROUND(vat_total * 100))),0) vat_minor,
+        COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) gross_minor
+       FROM invoices
+       WHERE cancelled=0 AND invoice_type='PROJECT_INVOICE'`
     ),
-    one<{ count: number; value: number }>(
+    one<{ count: number; value: number; net_minor: number; vat_minor: number; gross_minor: number }>(
       c.env.DB,
-      "SELECT COUNT(*) count, COALESCE(SUM(total),0) value FROM invoices WHERE cancelled=0 AND invoice_type='SUBSCRIPTION_INVOICE'"
+      `SELECT
+        COUNT(*) count,
+        COALESCE(SUM(total),0) value,
+        COALESCE(SUM(COALESCE(subtotal_minor, ROUND(subtotal * 100))),0) net_minor,
+        COALESCE(SUM(COALESCE(vat_total_minor, ROUND(vat_total * 100))),0) vat_minor,
+        COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) gross_minor
+       FROM invoices
+       WHERE cancelled=0 AND invoice_type='SUBSCRIPTION_INVOICE'`
     ),
     one<{ active_count: number; mrr_minor: number; cancel_at_period_end: number }>(
       c.env.DB,
@@ -203,9 +235,13 @@ app.get("/api/dashboard", requirePermission("bookkeeping.read"), async (c) => {
         (SELECT COUNT(*) FROM payments WHERE status='FAILED') failed_payments,
         (SELECT COUNT(*) FROM subscriptions WHERE status='PAST_DUE') past_due_subscriptions`
     ),
-    all<{ month: string; invoiced_minor: number }>(
+    all<{ month: string; invoiced_minor: number; vat_minor: number; gross_minor: number }>(
       c.env.DB,
-      `SELECT strftime('%Y-%m', invoice_date) month, COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) invoiced_minor
+      `SELECT
+        strftime('%Y-%m', invoice_date) month,
+        COALESCE(SUM(COALESCE(subtotal_minor, ROUND(subtotal * 100))),0) invoiced_minor,
+        COALESCE(SUM(COALESCE(vat_total_minor, ROUND(vat_total * 100))),0) vat_minor,
+        COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) gross_minor
        FROM invoices
        WHERE invoice_date >= date('now','start of month','-5 months') AND cancelled=0
        GROUP BY strftime('%Y-%m', invoice_date)
@@ -257,7 +293,20 @@ app.get("/api/dashboard", requirePermission("bookkeeping.read"), async (c) => {
     all<any>(c.env.DB, "SELECT * FROM sync_log WHERE success=0 ORDER BY created_at DESC LIMIT 4"),
     one<{ count: number }>(c.env.DB, "SELECT COUNT(*) count FROM receipts"),
     all<any>(c.env.DB, "SELECT * FROM sync_log ORDER BY created_at DESC LIMIT 10"),
-    connectionStatus(c.env)
+    connectionStatus(c.env),
+    one<{ count: number; net_minor: number; vat_minor: number; gross_minor: number }>(
+      c.env.DB,
+      `SELECT
+        COUNT(*) count,
+        COALESCE(SUM(COALESCE(subtotal_minor, ROUND(subtotal * 100))),0) net_minor,
+        COALESCE(SUM(COALESCE(vat_total_minor, ROUND(vat_total * 100))),0) vat_minor,
+        COALESCE(SUM(COALESCE(total_minor, ROUND(total * 100))),0) gross_minor
+       FROM invoices
+       WHERE cancelled=0
+         AND invoice_type='PROJECT_INVOICE'
+         AND invoice_date >= date('now','start of month')
+         AND invoice_date < date('now','start of month','+1 month')`
+    )
   ]);
   return c.json({
     customers,
@@ -276,6 +325,7 @@ app.get("/api/dashboard", requirePermission("bookkeeping.read"), async (c) => {
     receipts,
     logs,
     connection,
+    websiteSalesMonth,
     stripe: { configured: isStripeConfigured(c.env) }
   });
 });

@@ -119,7 +119,8 @@ export function requireCloudflareAccess(): MiddlewareHandler<{ Bindings: Env }> 
       return c.json({ error: result.error, code: result.code }, 403);
     }
 
-    (c as any).set("authenticatedUser", currentUserFromRequest(c.env, c.req.raw.headers, result.payload.email));
+    const identity = await accessIdentity(c, c.env);
+    (c as any).set("authenticatedUser", currentUserFromRequest(c.env, c.req.raw.headers, identity?.email ?? result.payload.email));
     await next();
   };
 }
@@ -312,6 +313,34 @@ async function verifyCloudflareAccessJwt(env: Env, token: string): Promise<{ ok:
       code: "ACCESS_JWT_INVALID"
     };
   }
+}
+
+async function accessIdentity(c: Parameters<MiddlewareHandler<{ Bindings: Env }>>[0], env: Env): Promise<{ email?: string | null } | null> {
+  try {
+    const identity = await (c.executionCtx as any)?.access?.getIdentity?.();
+    if (identity && typeof identity === "object") return identity;
+  } catch {
+    // Fall through to the Access identity endpoint below.
+  }
+  const authorizationCookie = accessAuthorizationCookie(c.req.header("cookie"));
+  const teamDomain = cloudflareAccessTeamDomain(env);
+  if (!authorizationCookie || !teamDomain) return null;
+  try {
+    const response = await fetch(`https://${teamDomain}/cdn-cgi/access/get-identity`, {
+      headers: { cookie: `CF_Authorization=${authorizationCookie}` }
+    });
+    if (!response.ok) return null;
+    const identity = await response.json<{ email?: string | null }>();
+    return identity && typeof identity === "object" ? identity : null;
+  } catch {
+    return null;
+  }
+}
+
+function accessAuthorizationCookie(cookieHeader: string | null | undefined): string | null {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\s*)CF_Authorization=([^;]+)/);
+  return match?.[1] ?? null;
 }
 
 function decodeBase64UrlToText(value: string): string {
